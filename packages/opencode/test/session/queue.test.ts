@@ -280,6 +280,46 @@ describe("SessionQueue", () => {
     })
   })
 
+  test("rebases queued items onto the executed steer context", async () => {
+    await Instance.provide({
+      directory: projectRoot,
+      fn: async () => {
+        const session = await Session.create({})
+
+        try {
+          const steer = await SessionQueue.enqueue({
+            sessionID: session.id,
+            mode: "steer",
+            payload: promptPayload("steer"),
+            createdAgainstExecutionID: "run_1",
+            supersedesExecutionID: "run_1",
+          })
+          const followup = await SessionQueue.enqueue({
+            sessionID: session.id,
+            mode: "queue",
+            payload: promptPayload("followup"),
+            createdAgainstExecutionID: steer.id,
+          })
+
+          const rebased = await SessionQueue.rebaseExecutionContext({
+            sessionID: session.id,
+            fromExecutionID: steer.id,
+            toExecutionID: "msg_2",
+          })
+
+          expect(rebased.map((item) => item.id)).toEqual([followup.id])
+          expect(rebased[0]?.createdAgainstExecutionID).toBe("msg_2")
+
+          const list = await SessionQueue.list(session.id)
+          expect(list.find((item) => item.id === steer.id)?.createdAgainstExecutionID).toBe("run_1")
+          expect(list.find((item) => item.id === followup.id)?.createdAgainstExecutionID).toBe("msg_2")
+        } finally {
+          await Session.remove(session.id)
+        }
+      },
+    })
+  })
+
   test("consumes the queued head and pauses when the head is blocked", async () => {
     await Instance.provide({
       directory: projectRoot,

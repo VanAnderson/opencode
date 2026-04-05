@@ -1191,6 +1191,83 @@ pluginIt.live(
   10_000,
 )
 
+pluginIt.live(
+  "queued commands stay dormant while busy and fire command hooks exactly once when consumed",
+  () =>
+    provideTmpdirServer(
+      Effect.fnUntraced(function* ({ llm }) {
+        resetRecordedPluginHooks()
+
+        const prompt = yield* SessionPrompt.Service
+        const queue = yield* SessionQueue.Service
+        const sessions = yield* Session.Service
+        const chat = yield* sessions.create({ title: "Queued command hooks" })
+        const firstGate = defer<void>()
+
+        yield* llm.reset
+        yield* llm.hold("first reply", firstGate.promise)
+        yield* llm.text("command reply")
+        yield* user(chat.id, "hello first")
+
+        const first = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.forkChild)
+        yield* llm.wait(1)
+
+        expect(recordedHookCount("command.execute.before")).toBe(0)
+
+        yield* queue.enqueue({
+          sessionID: chat.id,
+          mode: "queue",
+          payload: {
+            kind: "command",
+            command: "init",
+            arguments: "",
+            model: "test/test-model",
+            variant: "default",
+          },
+          source: "test",
+        })
+
+        yield* Effect.sleep(50)
+
+        expect(yield* llm.calls).toBe(1)
+        expect((yield* queue.list(chat.id)).map((item) => item.status)).toEqual(["queued"])
+        expect(recordedHookCount("command.execute.before")).toBe(0)
+
+        firstGate.resolve()
+        yield* llm.wait(2)
+
+        const firstExit = yield* Fiber.await(first)
+        expect(Exit.isSuccess(firstExit)).toBe(true)
+
+        yield* Effect.promise(async () => {
+          const end = Date.now() + 5000
+          while (Date.now() < end) {
+            const pending = await Effect.runPromise(queue.list(chat.id))
+            const msgs = await Effect.runPromise(sessions.messages({ sessionID: chat.id }))
+            if (
+              pending.length === 0 &&
+              recordedHookCount("command.execute.before") === 1 &&
+              msgs.some((msg) => msg.info.role === "assistant" && msg.parts.some((part) => part.type === "text" && part.text === "command reply"))
+            )
+              return
+            await new Promise((done) => setTimeout(done, 20))
+          }
+          throw new Error("timed out waiting for queued command dispatch")
+        })
+
+        expect(recordedHookCount("command.execute.before")).toBe(1)
+        const commandHook = recordedPluginHooks.find((hook) => hook.name === "command.execute.before")
+        expect(commandHook?.input).toMatchObject({
+          command: "init",
+          sessionID: chat.id,
+          arguments: "",
+        })
+      }),
+      { git: true, config: providerCfg },
+    ),
+  10_000,
+)
+
 it.live(
   "queued prompt dispatch persists submission provenance on the executed user message",
   () =>
@@ -1571,6 +1648,127 @@ unix(
       ),
     ),
   30_000,
+)
+
+it.live(
+  "steer with queued follow-ups behind it executes the steer first and preserves later work",
+  () =>
+    provideTmpdirServer(
+      Effect.fnUntraced(function* ({ dir, llm }) {
+        const chat = yield* Effect.promise(() => Session.create({ title: "Steer with follow-ups" }))
+        const app = Server.Default()
+
+        const submit = (body: {
+          mode: "queue" | "steer"
+          payload: SessionQueue.PendingMessagePayload
+          source: string
+        }) =>
+          Effect.promise(() =>
+            Promise.resolve(
+              app.request(`/session/${chat.id}/submit`, {
+                method: "POST",
+                headers: {
+                  "content-type": "application/json",
+                  "x-opencode-directory": dir,
+                },
+                body: JSON.stringify(body),
+              }),
+            ),
+          )
+
+        yield* llm.pushMatch((hit) => JSON.stringify(hit.body).includes("hello first"), reply().hang().item())
+        yield* llm.textMatch((hit) => JSON.stringify(hit.body).includes("hello steer"), "steered reply")
+        yield* llm.textMatch((hit) => JSON.stringify(hit.body).includes("hello after steer one"), "after steer one")
+        yield* llm.textMatch((hit) => JSON.stringify(hit.body).includes("hello after steer two"), "after steer two")
+        yield* user(chat.id, "hello first")
+
+        const first = yield* Effect.promise(() => SessionPrompt.loop({ sessionID: chat.id })).pipe(Effect.forkChild)
+        yield* llm.wait(1)
+
+        const steer = yield* submit({
+          mode: "steer",
+          payload: {
+            kind: "prompt",
+            agent: "build",
+            model: ref,
+            variant: "default",
+            parts: [{ type: "text", text: "hello steer" }],
+          },
+          source: "test",
+        })
+        expect(steer.status).toBe(200)
+
+        const followupOne = yield* submit({
+          mode: "queue",
+          payload: {
+            kind: "prompt",
+            agent: "build",
+            model: ref,
+            variant: "default",
+            parts: [{ type: "text", text: "hello after steer one" }],
+          },
+          source: "test",
+        })
+        expect(followupOne.status).toBe(200)
+
+        const followupTwo = yield* submit({
+          mode: "queue",
+          payload: {
+            kind: "prompt",
+            agent: "build",
+            model: ref,
+            variant: "default",
+            parts: [{ type: "text", text: "hello after steer two" }],
+          },
+          source: "test",
+        })
+        expect(followupTwo.status).toBe(200)
+
+        const firstExit = yield* Fiber.await(first)
+        expect(Exit.isSuccess(firstExit)).toBe(true)
+        if (Exit.isSuccess(firstExit) && firstExit.value.info.role === "assistant") {
+          expect(firstExit.value.info.error?.name).toBe("MessageAbortedError")
+        }
+
+        yield* Effect.promise(async () => {
+          const end = Date.now() + 5000
+          while (Date.now() < end) {
+            const pending = await SessionQueue.list(chat.id)
+            const msgs = await Session.messages({ sessionID: chat.id })
+            const assistantTexts = msgs
+              .filter((msg): msg is MessageV2.WithParts & { info: MessageV2.Assistant } => msg.info.role === "assistant")
+              .flatMap((msg) =>
+                msg.parts
+                  .filter((part): part is MessageV2.TextPart => part.type === "text")
+                  .map((part) => part.text),
+              )
+            if (pending.length === 0 && assistantTexts.includes("after steer two")) return
+            await new Promise((done) => setTimeout(done, 20))
+          }
+          throw new Error("timed out waiting for steer follow-up execution")
+        })
+
+        const msgs = yield* Effect.promise(() => Session.messages({ sessionID: chat.id }))
+        const userTexts = msgs
+          .filter((msg): msg is MessageV2.WithParts & { info: MessageV2.User } => msg.info.role === "user")
+          .map((msg) => msg.parts.find((part) => part.type === "text"))
+          .map((part) => (part?.type === "text" ? part.text : undefined))
+        expect(userTexts).toEqual(["hello first", "hello steer", "hello after steer one", "hello after steer two"])
+
+        const executedUsers = msgs.filter(
+          (msg): msg is MessageV2.WithParts & { info: MessageV2.User } =>
+            msg.info.role === "user" &&
+            msg.parts.some((part) =>
+              part.type === "text" &&
+              ["hello steer", "hello after steer one", "hello after steer two"].includes(part.text),
+            ),
+        )
+        expect(executedUsers.map((msg) => msg.info.submission?.mode)).toEqual(["steer", "queue", "queue"])
+        expect(yield* llm.calls).toBe(4)
+      }),
+      { git: true, config: providerCfg },
+    ),
+  10_000,
 )
 
 it.live(

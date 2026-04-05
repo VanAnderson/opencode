@@ -537,6 +537,82 @@ describe("session action routes", () => {
     })
   })
 
+  test("submit route attaches follow-up queue items to the queued steer context", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const session = await Session.create({})
+        const app = Server.Default()
+        const current = await user(session.id, "active")
+        await activeAssistant(session.id, current.id)
+
+        const interruptDeferred = Promise.withResolvers<void>()
+        spyOn(SessionStatus, "get").mockResolvedValue({ type: "busy" })
+        spyOn(SessionPrompt, "interrupt").mockImplementation(() => interruptDeferred.promise)
+        spyOn(SessionPrompt, "runQueuedIfIdle").mockResolvedValue()
+
+        const steer = await app.request(`/session/${session.id}/submit`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            mode: "steer",
+            payload: promptPayload("urgent"),
+            source: "app",
+          }),
+        })
+        expect(steer.status).toBe(200)
+        const steerBody = (await steer.json()) as {
+          kind: "queued"
+          pending: SessionQueue.PendingMessage
+        }
+
+        const followup = await app.request(`/session/${session.id}/submit`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            mode: "queue",
+            payload: promptPayload("after steer"),
+            source: "app",
+          }),
+        })
+        expect(followup.status).toBe(200)
+        const followupBody = (await followup.json()) as {
+          kind: "queued"
+          pending: SessionQueue.PendingMessage
+        }
+        expect(followupBody.pending.createdAgainstExecutionID).toBe(steerBody.pending.id)
+
+        interruptDeferred.resolve()
+        await new Promise((resolve) => setTimeout(resolve, 25))
+
+        const queue = await SessionQueue.list(session.id)
+        expect(queue.map((item) => ({
+          text: pendingText(item),
+          status: item.status,
+          createdAgainstExecutionID: item.createdAgainstExecutionID,
+        }))).toEqual([
+          {
+            text: "urgent",
+            status: "queued",
+            createdAgainstExecutionID: current.id,
+          },
+          {
+            text: "after steer",
+            status: "queued",
+            createdAgainstExecutionID: steerBody.pending.id,
+          },
+        ])
+
+        await Session.remove(session.id)
+      },
+    })
+  })
+
   test("queue reorder, promote, and clear routes return updated queue state", async () => {
     await using tmp = await tmpdir({ git: true })
     await Instance.provide({
