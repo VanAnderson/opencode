@@ -150,7 +150,7 @@ function makeHttp(pluginLayer = Plugin.defaultLayer) {
   const deps = Layer.mergeAll(
     Session.defaultLayer,
     Snapshot.defaultLayer,
-    LLM.defaultLayer,
+    LLM.layer.pipe(Layer.provide(pluginLayer)),
     AgentSvc.defaultLayer,
     Command.defaultLayer,
     Permission.defaultLayer,
@@ -210,6 +210,12 @@ const recordedPluginLayer = Layer.mock(Plugin.Service)({
         name,
         input,
       })
+      if (name === "chat.params" && typeof output === "object" && output !== null) {
+        ;(output as { temperature?: number }).temperature = 0.123
+      }
+      if (name === "chat.headers" && typeof output === "object" && output !== null) {
+        ;((output as { headers?: Record<string, string> }).headers ??= {})["x-queue-hook"] = "queued"
+      }
       return output
     }),
   list: () => Effect.succeed([]),
@@ -1093,14 +1099,6 @@ pluginIt.live(
     provideTmpdirServer(
       Effect.fnUntraced(function* ({ llm }) {
         resetRecordedPluginHooks()
-        const staticPluginHooks: RecordedPluginHook[] = []
-        const trigger = spyOn(Plugin, "trigger").mockImplementation(async (name: string, input: unknown, output: any) => {
-          staticPluginHooks.push({ name, input })
-          if (name === "chat.params") output.temperature = 0.123
-          if (name === "chat.headers") output.headers["x-queue-hook"] = "queued"
-          return output
-        })
-        yield* Effect.addFinalizer(() => Effect.sync(() => trigger.mockRestore()))
 
         const prompt = yield* SessionPrompt.Service
         const queue = yield* SessionQueue.Service
@@ -1118,8 +1116,8 @@ pluginIt.live(
 
         expect(recordedHookCount("chat.message")).toBe(0)
         expect(recordedHookCount("experimental.chat.messages.transform")).toBe(1)
-        expect(staticPluginHooks.filter((hook) => hook.name === "chat.params")).toHaveLength(1)
-        expect(staticPluginHooks.filter((hook) => hook.name === "chat.headers")).toHaveLength(1)
+        expect(recordedHookCount("chat.params")).toBe(1)
+        expect(recordedHookCount("chat.headers")).toBe(1)
 
         yield* queue.enqueue({
           sessionID: chat.id,
@@ -1140,8 +1138,8 @@ pluginIt.live(
         expect((yield* queue.list(chat.id)).map((item) => item.status)).toEqual(["queued"])
         expect(recordedHookCount("chat.message")).toBe(0)
         expect(recordedHookCount("experimental.chat.messages.transform")).toBe(1)
-        expect(staticPluginHooks.filter((hook) => hook.name === "chat.params")).toHaveLength(1)
-        expect(staticPluginHooks.filter((hook) => hook.name === "chat.headers")).toHaveLength(1)
+        expect(recordedHookCount("chat.params")).toBe(1)
+        expect(recordedHookCount("chat.headers")).toBe(1)
 
         firstGate.resolve()
         yield* llm.wait(2)
@@ -1171,8 +1169,8 @@ pluginIt.live(
 
         expect(recordedHookCount("chat.message")).toBe(1)
         expect(recordedHookCount("experimental.chat.messages.transform")).toBe(2)
-        expect(staticPluginHooks.filter((hook) => hook.name === "chat.params")).toHaveLength(2)
-        expect(staticPluginHooks.filter((hook) => hook.name === "chat.headers")).toHaveLength(2)
+        expect(recordedHookCount("chat.params")).toBe(2)
+        expect(recordedHookCount("chat.headers")).toBe(2)
 
         const chatMessageHook = recordedPluginHooks.find((hook) => hook.name === "chat.message")
         expect(chatMessageHook?.input).toMatchObject({

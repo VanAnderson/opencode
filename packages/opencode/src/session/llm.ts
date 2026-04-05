@@ -52,6 +52,7 @@ export namespace LLM {
   export const layer = Layer.effect(
     Service,
     Effect.gen(function* () {
+      const plugin = yield* Plugin.Service
       return Service.of({
         stream(input) {
           return Stream.scoped(
@@ -62,7 +63,15 @@ export namespace LLM {
                   (ctrl) => Effect.sync(() => ctrl.abort()),
                 )
 
-                const result = yield* Effect.promise(() => LLM.stream({ ...input, abort: ctrl.signal }))
+                const result = yield* Effect.promise(() =>
+                  streamWithPluginTrigger({ ...input, abort: ctrl.signal }, (name, input, output) =>
+                    Effect.runPromise(
+                      plugin.trigger(name as never, input as never, output as never).pipe(
+                        Effect.provideService(Plugin.Service, plugin),
+                      ),
+                    ) as Promise<typeof output>,
+                  ),
+                )
 
                 return Stream.fromAsyncIterable(result.fullStream, (e) =>
                   e instanceof Error ? e : new Error(String(e)),
@@ -75,9 +84,13 @@ export namespace LLM {
     }),
   )
 
-  export const defaultLayer = layer
+  export const defaultLayer = layer.pipe(Layer.provide(Plugin.defaultLayer))
 
   export async function stream(input: StreamRequest) {
+    return streamWithPluginTrigger(input, Plugin.trigger)
+  }
+
+  async function streamWithPluginTrigger(input: StreamRequest, trigger: typeof Plugin.trigger) {
     const l = log
       .clone()
       .tag("providerID", input.model.providerID)
@@ -114,7 +127,7 @@ export namespace LLM {
     )
 
     const header = system[0]
-    await Plugin.trigger(
+    await trigger(
       "experimental.chat.system.transform",
       { sessionID: input.sessionID, model: input.model },
       { system },
@@ -160,7 +173,7 @@ export namespace LLM {
             ...input.messages,
           ]
 
-    const params = await Plugin.trigger(
+    const params = await trigger(
       "chat.params",
       {
         sessionID: input.sessionID,
@@ -179,7 +192,7 @@ export namespace LLM {
       },
     )
 
-    const { headers } = await Plugin.trigger(
+    const { headers } = await trigger(
       "chat.headers",
       {
         sessionID: input.sessionID,
