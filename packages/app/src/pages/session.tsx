@@ -35,6 +35,7 @@ import { getSessionPrefetch, SESSION_PREFETCH_TTL } from "@/context/global-sync/
 import { useGlobalSync } from "@/context/global-sync"
 import { useLanguage } from "@/context/language"
 import { useLayout } from "@/context/layout"
+import { usePlatform } from "@/context/platform"
 import { usePrompt } from "@/context/prompt"
 import { useSDK } from "@/context/sdk"
 import { useSettings } from "@/context/settings"
@@ -56,6 +57,7 @@ import { SessionSidePanel } from "@/pages/session/session-side-panel"
 import { TerminalPanel } from "@/pages/session/terminal-panel"
 import { useSessionCommands } from "@/pages/session/use-session-commands"
 import { useSessionHashScroll } from "@/pages/session/use-session-hash-scroll"
+import { Persist, persisted, removePersisted } from "@/utils/persist"
 import { extractPromptFromParts } from "@/utils/prompt"
 import { same } from "@/utils/same"
 import { formatServerError } from "@/utils/server-errors"
@@ -71,9 +73,36 @@ import {
 
 const emptyUserMessages: UserMessage[] = []
 const emptyPendingMessages: PendingMessage[] = []
+const emptyLegacyFollowups: LegacyFollowupItem[] = []
 
 type ChangeMode = "git" | "branch" | "session" | "turn"
 type VcsMode = "git" | "branch"
+type LegacyFollowupItem = FollowupDraft & { id: string }
+type LegacyFollowupState = {
+  items: Record<string, LegacyFollowupItem[] | undefined>
+  failed: Record<string, string | undefined>
+  paused: Record<string, boolean | undefined>
+  edit: Record<string, FollowupEdit | undefined>
+}
+
+function legacyFollowupEmpty(state: LegacyFollowupState) {
+  return (
+    Object.values(state.items).every((items) => !items?.length) &&
+    Object.values(state.failed).every((value) => !value) &&
+    Object.values(state.paused).every((value) => !value) &&
+    Object.values(state.edit).every((value) => !value)
+  )
+}
+
+function legacyFollowupHasSlashDraft(items: Pick<FollowupDraft, "prompt">[]) {
+  return items.some((item) =>
+    item.prompt
+      .map((part) => ("content" in part ? part.content : ""))
+      .join("")
+      .trimStart()
+      .startsWith("/"),
+  )
+}
 
 type SessionHistoryWindowInput = {
   sessionID: () => string | undefined
@@ -330,6 +359,7 @@ export default function Page() {
   const language = useLanguage()
   const sdk = useSDK()
   const settings = useSettings()
+  const platform = usePlatform()
   const prompt = usePrompt()
   const comments = useComments()
   const terminal = useTerminal()
@@ -1571,6 +1601,18 @@ export default function Page() {
     })
   }
 
+  const legacyFollowupTarget = Persist.workspace(sdk.directory, "followup", ["followup.v1"])
+  const [legacyFollowup, setLegacyFollowup, , legacyFollowupReady] = persisted(
+    legacyFollowupTarget,
+    createStore<LegacyFollowupState>({
+      items: {},
+      failed: {},
+      paused: {},
+      edit: {},
+    }),
+  )
+  const migratedLegacySessions = new Set<string>()
+
   const merge = (next: NonNullable<ReturnType<typeof info>>) =>
     sync.set("session", (list) => {
       const idx = list.findIndex((item) => item.id === next.id)
@@ -1599,6 +1641,59 @@ export default function Page() {
   const [followup, setFollowup] = createStore({
     edit: undefined as FollowupEdit | undefined,
   })
+
+  createEffect(
+    on(
+      () => [params.id, legacyFollowupReady(), sync.data.command.map((item) => item.name).join("\0")] as const,
+      ([sessionID, ready]) => {
+        if (!sessionID || !ready || migratedLegacySessions.has(sessionID)) return
+
+        const items = legacyFollowup.items[sessionID] ?? emptyLegacyFollowups
+        const hasLegacyState =
+          items.length > 0 ||
+          !!legacyFollowup.failed[sessionID] ||
+          !!legacyFollowup.paused[sessionID] ||
+          !!legacyFollowup.edit[sessionID]
+        if (!hasLegacyState) return
+        if (legacyFollowupHasSlashDraft(items) && sync.data.command.length === 0) return
+
+        migratedLegacySessions.add(sessionID)
+        const commands = sync.data.command.map((item) => item.name)
+
+        void (async () => {
+          try {
+            for (const item of items) {
+              const payload = buildPendingMessagePayload(item, commands)
+              await sdk.client.session.queueCreate({
+                sessionID,
+                mode: "queue",
+                payload,
+                source: "app",
+              })
+              setLegacyFollowup("items", sessionID, (current) => {
+                const next = (current ?? []).filter((entry) => entry.id !== item.id)
+                return next.length ? next : undefined
+              })
+            }
+
+            batch(() => {
+              setLegacyFollowup("failed", sessionID, undefined)
+              setLegacyFollowup("paused", sessionID, undefined)
+              setLegacyFollowup("edit", sessionID, undefined)
+            })
+
+            if (untrack(() => legacyFollowupEmpty(legacyFollowup))) {
+              await removePersisted(legacyFollowupTarget, platform)
+            }
+          } catch (err) {
+            migratedLegacySessions.delete(sessionID)
+            fail(err)
+          }
+        })()
+      },
+      { defer: true },
+    ),
+  )
 
   const queuedFollowups = createMemo(() => {
     const id = params.id

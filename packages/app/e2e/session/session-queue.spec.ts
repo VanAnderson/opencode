@@ -1,7 +1,7 @@
 import { test, expect, type Page } from "../fixtures"
 import { assistantText, waitSessionIdle, withSession } from "../actions"
 import { promptSelector } from "../selectors"
-import { modKey } from "../utils"
+import { modKey, workspacePersistKey } from "../utils"
 
 test.describe.configure({ timeout: 120_000 })
 
@@ -54,6 +54,27 @@ function queuedPromptText(item: any) {
     .map((part: any) => (part?.type === "text" ? part.text : ""))
     .join("")
     .trim()
+}
+
+function legacyFollowupState(sessionID: string, sessionDirectory: string, text: string) {
+  return JSON.stringify({
+    items: {
+      [sessionID]: [
+        {
+          id: "legacy-followup-1",
+          sessionID,
+          sessionDirectory,
+          prompt: [{ type: "text", content: text, start: 0, end: text.length }],
+          context: [],
+          agent: "build",
+          model: { providerID: "opencode", modelID: "big-pickle" },
+        },
+      ],
+    },
+    failed: {},
+    paused: {},
+    edit: {},
+  })
 }
 
 async function queueIDs(
@@ -312,5 +333,49 @@ test("queued follow-ups persist across page reload and reconnect", async ({ page
     await waitSessionIdle(project.sdk, session.id, 90_000)
     await expect.poll(() => assistantText(project.sdk, session.id), { timeout: 90_000 }).toContain(secondToken)
     await expect(dock).toHaveCount(0)
+  })
+})
+
+test("legacy followup.v1 drafts migrate into the backend queue on session load", async ({ page, project }) => {
+  await project.open()
+  await withSession(project.sdk, `e2e queue migration ${Date.now()}`, async (session) => {
+    project.trackSession(session.id)
+    await project.gotoSession(session.id)
+
+    const text = "Migrated queued follow-up"
+    const workspaceKey = workspacePersistKey(project.directory, "followup")
+
+    await page.evaluate(
+      (input) => {
+        localStorage.setItem("followup.v1", input.raw)
+        localStorage.removeItem(input.workspaceKey)
+      },
+      {
+        raw: legacyFollowupState(session.id, project.directory, text),
+        workspaceKey,
+      },
+    )
+
+    await page.reload()
+    await expect(page.locator(promptSelector).first()).toBeVisible()
+
+    const dock = page.locator('[data-component="session-followup-dock"]').first()
+    await expect(dock).toContainText(text)
+    await expect.poll(() => queueItems(project, session.id), { timeout: 15_000 }).toHaveLength(1)
+    await expect.poll(async () => queuedPromptText((await queueItems(project, session.id))[0]), { timeout: 15_000 }).toBe(
+      text,
+    )
+    await expect
+      .poll(
+        () =>
+          page.evaluate((input) => {
+            return {
+              legacy: localStorage.getItem("followup.v1"),
+              workspace: localStorage.getItem(input.workspaceKey),
+            }
+          }, { workspaceKey }),
+        { timeout: 15_000 },
+      )
+      .toEqual({ legacy: null, workspace: null })
   })
 })
