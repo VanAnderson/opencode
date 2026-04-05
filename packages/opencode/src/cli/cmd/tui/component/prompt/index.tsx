@@ -36,6 +36,7 @@ import { useKV } from "../../context/kv"
 import { useTextareaKeybindings } from "../textarea-keybindings"
 import { DialogSkill } from "../dialog-skill"
 import { CONSOLE_MANAGED_ICON, consoleManagedProviderLabel } from "@tui/util/provider-origin"
+import { dispatchPromptSubmit, type BusySubmitMode } from "./submit"
 
 export type PromptProps = {
   sessionID?: string
@@ -235,7 +236,29 @@ export function Prompt(props: PromptProps) {
         hidden: true,
         onSelect: (dialog) => {
           if (!input.focused) return
-          submit()
+          void submit()
+          dialog.clear()
+        },
+      },
+      {
+        title: "Queue prompt",
+        value: "prompt.submit.queue",
+        category: "Prompt",
+        enabled: status().type !== "idle" && store.mode === "normal" && !!store.prompt.input,
+        onSelect: (dialog) => {
+          if (!input.focused) return
+          void submit("queue")
+          dialog.clear()
+        },
+      },
+      {
+        title: "Steer prompt",
+        value: "prompt.submit.steer",
+        category: "Prompt",
+        enabled: status().type !== "idle" && store.mode === "normal" && !!store.prompt.input,
+        onSelect: (dialog) => {
+          if (!input.focused) return
+          void submit("steer")
           dialog.clear()
         },
       },
@@ -605,7 +628,7 @@ export function Prompt(props: PromptProps) {
     },
   ])
 
-  async function submit() {
+  async function submit(requestedMode?: BusySubmitMode) {
     if (props.disabled) return
     if (autocomplete?.visible) return
     if (!store.prompt.input) return
@@ -667,14 +690,19 @@ export function Prompt(props: PromptProps) {
     const variant = local.model.variant.current()
 
     if (store.mode === "shell") {
-      sdk.client.session.shell({
-        sessionID,
-        agent: local.agent.current().name,
-        model: {
-          providerID: selectedModel.providerID,
-          modelID: selectedModel.modelID,
+      await dispatchPromptSubmit({
+        client: sdk.client,
+        status: status(),
+        request: {
+          kind: "shell",
+          sessionID,
+          agent: local.agent.current().name,
+          model: {
+            providerID: selectedModel.providerID,
+            modelID: selectedModel.modelID,
+          },
+          command: inputText,
         },
-        command: inputText,
       })
       setStore("mode", "normal")
     } else if (
@@ -692,26 +720,35 @@ export function Prompt(props: PromptProps) {
       const restOfInput = firstLineEnd === -1 ? "" : inputText.slice(firstLineEnd + 1)
       const args = firstLineArgs.join(" ") + (restOfInput ? "\n" + restOfInput : "")
 
-      sdk.client.session.command({
-        sessionID,
-        command: command.slice(1),
-        arguments: args,
-        agent: local.agent.current().name,
-        model: `${selectedModel.providerID}/${selectedModel.modelID}`,
-        messageID,
-        variant,
-        parts: nonTextParts
-          .filter((x) => x.type === "file")
-          .map((x) => ({
-            id: PartID.ascending(),
-            ...x,
-          })),
+      await dispatchPromptSubmit({
+        client: sdk.client,
+        status: status(),
+        requestedMode,
+        request: {
+          kind: "command",
+          sessionID,
+          command: command.slice(1),
+          arguments: args,
+          agent: local.agent.current().name,
+          model: `${selectedModel.providerID}/${selectedModel.modelID}`,
+          messageID,
+          variant,
+          parts: nonTextParts
+            .filter((x) => x.type === "file")
+            .map((x) => ({
+              id: PartID.ascending(),
+              ...x,
+            })),
+        },
       })
     } else {
-      sdk.client.session
-        .prompt({
+      await dispatchPromptSubmit({
+        client: sdk.client,
+        status: status(),
+        requestedMode,
+        request: {
+          kind: "prompt",
           sessionID,
-          ...selectedModel,
           messageID,
           agent: local.agent.current().name,
           model: selectedModel,
@@ -724,8 +761,8 @@ export function Prompt(props: PromptProps) {
             },
             ...nonTextParts.map(assign),
           ],
-        })
-        .catch(() => {})
+        },
+      }).catch(() => {})
     }
     history.append({
       ...store.prompt,
@@ -748,6 +785,10 @@ export function Prompt(props: PromptProps) {
         })
       }, 50)
     input.clear()
+  }
+
+  const handleTextareaSubmit = () => {
+    void submit()
   }
   const exit = useExit()
 
@@ -1006,7 +1047,7 @@ export function Prompt(props: PromptProps) {
                     input.cursorOffset = input.plainText.length
                 }
               }}
-              onSubmit={submit}
+              onSubmit={handleTextareaSubmit}
               onPaste={async (event: PasteEvent) => {
                 if (props.disabled) {
                   event.preventDefault()
