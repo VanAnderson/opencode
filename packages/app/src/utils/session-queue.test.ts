@@ -5,6 +5,7 @@ import {
   buildPendingMessagePayload,
   pendingMessagePreview,
   pendingMessageToEdit,
+  reorderPendingMessageIDs,
   type FollowupDraft,
 } from "./session-queue"
 
@@ -65,5 +66,14 @@ describe("session queue helpers", () => {
       prompt: prompt("/review src/index.ts"),
       context: [],
     })
+  })
+
+  test("reorders pending IDs one slot at a time", () => {
+    const items = [{ id: "a" }, { id: "b" }, { id: "c" }] as Array<Pick<PendingMessage, "id">>
+
+    expect(reorderPendingMessageIDs(items, "b", "up")).toEqual(["b", "a", "c"])
+    expect(reorderPendingMessageIDs(items, "b", "down")).toEqual(["a", "c", "b"])
+    expect(reorderPendingMessageIDs(items, "a", "up")).toBeUndefined()
+    expect(reorderPendingMessageIDs(items, "c", "down")).toBeUndefined()
   })
 })
