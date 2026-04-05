@@ -1070,7 +1070,11 @@ NOTE: At any point in time through this workflow you should feel free to ask the
             : undefined
         const variant = input.variant ?? (ag.variant && full?.variants?.[ag.variant] ? ag.variant : undefined)
         const created = Date.now()
-        const submission = input.submission ? { ...input.submission, dispatchedAt: input.submission.dispatchedAt ?? created } : undefined
+        const submission: MessageV2.Submission = {
+          mode: "immediate",
+          ...input.submission,
+          dispatchedAt: input.submission?.dispatchedAt ?? created,
+        }
 
         const info: MessageV2.Info = {
           id: input.messageID ?? MessageID.ascending(),
