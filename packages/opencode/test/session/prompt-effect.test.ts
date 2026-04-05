@@ -801,6 +801,92 @@ it.live(
   5_000,
 )
 
+it.live(
+  "idle redispatch drains multiple queued prompts in FIFO order",
+  () =>
+    provideTmpdirServer(
+      Effect.fnUntraced(function* ({ llm }) {
+        const prompt = yield* SessionPrompt.Service
+        const queue = yield* SessionQueue.Service
+        const sessions = yield* Session.Service
+        const chat = yield* sessions.create({ title: "Queued FIFO follow-ups" })
+        const firstGate = defer<void>()
+
+        yield* llm.hold("first reply", firstGate.promise)
+        yield* llm.text("second reply")
+        yield* llm.text("third reply")
+        yield* user(chat.id, "hello first")
+
+        const first = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.forkChild)
+        yield* llm.wait(1)
+
+        yield* queue.enqueue({
+          sessionID: chat.id,
+          mode: "queue",
+          payload: {
+            kind: "prompt",
+            agent: "build",
+            model: ref,
+            variant: "default",
+            parts: [{ type: "text", text: "hello second" }],
+          },
+          source: "test",
+        })
+        yield* queue.enqueue({
+          sessionID: chat.id,
+          mode: "queue",
+          payload: {
+            kind: "prompt",
+            agent: "build",
+            model: ref,
+            variant: "default",
+            parts: [{ type: "text", text: "hello third" }],
+          },
+          source: "test",
+        })
+
+        firstGate.resolve()
+        yield* Fiber.await(first)
+
+        yield* Effect.promise(async () => {
+          const end = Date.now() + 5000
+          while (Date.now() < end) {
+            const msgs = await Effect.runPromise(sessions.messages({ sessionID: chat.id }))
+            const assistantTexts = msgs
+              .filter((msg) => msg.info.role === "assistant")
+              .map((msg) => msg.parts.find((part) => part.type === "text"))
+              .map((part) => (part?.type === "text" ? part.text : undefined))
+            if (assistantTexts.at(-1) === "third reply") return
+            await new Promise((done) => setTimeout(done, 20))
+          }
+          throw new Error("timed out waiting for FIFO queued follow-ups")
+        })
+
+        const msgs = yield* sessions.messages({ sessionID: chat.id })
+        const userTexts = msgs
+          .filter((msg) => msg.info.role === "user")
+          .map((msg) => msg.parts.find((part) => part.type === "text"))
+          .map((part) => (part?.type === "text" ? part.text : undefined))
+        const assistantTexts = msgs
+          .filter((msg) => msg.info.role === "assistant")
+          .map((msg) => msg.parts.find((part) => part.type === "text"))
+          .map((part) => (part?.type === "text" ? part.text : undefined))
+
+        expect(yield* llm.calls).toBe(3)
+        expect(yield* queue.list(chat.id)).toEqual([])
+        expect(userTexts).toEqual(["hello first", "hello second", "hello third"])
+        expect(assistantTexts).toEqual(["first reply", "second reply", "third reply"])
+
+        const inputs = yield* llm.inputs
+        expect(JSON.stringify(inputs[1]?.messages)).toContain("hello second")
+        expect(JSON.stringify(inputs[1]?.messages)).not.toContain("hello third")
+        expect(JSON.stringify(inputs[2]?.messages)).toContain("hello third")
+      }),
+      { git: true, config: providerCfg },
+    ),
+  5_000,
+)
+
 it.live("concurrent loop callers get same result", () =>
   provideTmpdirInstance(
     (dir) =>
