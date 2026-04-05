@@ -225,6 +225,14 @@ export function pendingMessageToEdit(pending: PendingMessage, sessionDirectory: 
   }
 }
 
+export function pendingMessageAttachmentCount(pending: Pick<PendingMessage, "payload">) {
+  if (pending.payload.kind === "command") return pending.payload.parts?.length ?? 0
+  return pending.payload.parts.reduce((count, part) => {
+    if (part.type !== "file" || !part.url.startsWith("data:")) return count
+    return count + 1
+  }, 0)
+}
+
 export function reorderPendingMessageIDs(
   pending: Pick<PendingMessage, "id">[],
   pendingMessageID: string,

@@ -1,4 +1,4 @@
-import { For, Show, createMemo } from "solid-js"
+import { For, Show, createMemo, type JSX } from "solid-js"
 import { createStore } from "solid-js/store"
 import { Button } from "@opencode-ai/ui/button"
 import { DockTray } from "@opencode-ai/ui/dock-surface"
@@ -37,6 +37,14 @@ export function SessionFollowupDock(props: {
   })
 
   const toggle = () => setStore("collapsed", (value) => !value)
+  const holdButton: JSX.EventHandlerUnion<HTMLButtonElement, MouseEvent> = (event) => {
+    event.preventDefault()
+    event.stopPropagation()
+  }
+  const clearQueue: JSX.EventHandlerUnion<HTMLButtonElement, MouseEvent> = (event) => {
+    event.stopPropagation()
+    props.onClear?.()
+  }
   const total = createMemo(() => props.items.length)
   const label = createMemo(() =>
     language.t(total() === 1 ? "session.followupDock.summary.one" : "session.followupDock.summary.other", {
@@ -75,14 +83,8 @@ export function SessionFollowupDock(props: {
               size="small"
               variant="ghost"
               disabled={!!props.sending || props.clearing || props.clearDisabled}
-              onMouseDown={(event: MouseEvent) => {
-                event.preventDefault()
-                event.stopPropagation()
-              }}
-              onClick={(event: MouseEvent) => {
-                event.stopPropagation()
-                props.onClear?.()
-              }}
+              onMouseDown={holdButton}
+              onClick={clearQueue}
             >
               {language.t("session.followupDock.clearAll")}
             </Button>

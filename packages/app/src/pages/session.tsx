@@ -62,6 +62,7 @@ import { formatServerError } from "@/utils/server-errors"
 import {
   buildPendingMessagePayload,
   type FollowupDraft,
+  pendingMessageAttachmentCount,
   pendingMessagePreview,
   pendingMessageToEdit,
   reorderPendingMessageIDs,
@@ -1710,11 +1711,6 @@ export default function Page() {
     return settings.general.followup()
   })
 
-  const followupAttachmentCount = (item: PendingMessage) => {
-    if (item.payload.kind === "command") return item.payload.parts?.length ?? 0
-    return (item.payload.parts ?? []).filter((part) => part.type === "file" && part.url.startsWith("data:")).length
-  }
-
   const followupMeta = (item: PendingMessage) => {
     const created = new Date(item.time.created).toLocaleTimeString([], {
       hour: "numeric",
@@ -1727,7 +1723,7 @@ export default function Page() {
         : item.payload.model
           ? `${item.payload.model.providerID}/${item.payload.model.modelID}`
           : undefined
-    const attachments = followupAttachmentCount(item)
+    const attachments = pendingMessageAttachmentCount(item)
     const attachmentMeta = attachments
       ? language.t(
           attachments === 1
