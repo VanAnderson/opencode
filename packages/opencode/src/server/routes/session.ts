@@ -347,11 +347,21 @@ export const SessionRoutes = lazy(() =>
         const params = c.req.valid("param")
         const body = c.req.valid("json")
         await Session.get(params.sessionID)
+        const previous = body.status === "queued" ? await SessionQueue.get(params) : undefined
         const pending = await SessionQueue.update({
           ...body,
           sessionID: params.sessionID,
           pendingMessageID: params.pendingMessageID,
         })
+        if (body.status === "queued" && previous?.status !== "queued") {
+          SessionPrompt.runQueuedIfIdle(params.sessionID).catch((error) => {
+            log.error("failed to resume queued item", {
+              sessionID: params.sessionID,
+              pendingMessageID: params.pendingMessageID,
+              error,
+            })
+          })
+        }
         return c.json(pending)
       },
     )

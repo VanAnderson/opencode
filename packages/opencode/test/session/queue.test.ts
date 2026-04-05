@@ -317,4 +317,39 @@ describe("SessionQueue", () => {
       },
     })
   })
+
+  test("requeue clears stale error details when a failed item is resumed", async () => {
+    await Instance.provide({
+      directory: projectRoot,
+      fn: async () => {
+        const session = await Session.create({})
+
+        try {
+          const item = await SessionQueue.enqueue({
+            sessionID: session.id,
+            mode: "queue",
+            payload: promptPayload("retry me"),
+          })
+
+          await SessionQueue.update({
+            sessionID: session.id,
+            pendingMessageID: item.id,
+            status: "failed",
+            error: { message: "boom", code: "APIError" },
+          })
+
+          const resumed = await SessionQueue.update({
+            sessionID: session.id,
+            pendingMessageID: item.id,
+            status: "queued",
+          })
+
+          expect(resumed.status).toBe("queued")
+          expect(resumed.error).toBeUndefined()
+        } finally {
+          await Session.remove(session.id)
+        }
+      },
+    })
+  })
 })

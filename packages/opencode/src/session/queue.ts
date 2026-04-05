@@ -343,6 +343,7 @@ export namespace SessionQueue {
             if (input.supersedesExecutionID !== undefined)
               patch.supersedes_execution_id = input.supersedesExecutionID
             if (input.error !== undefined) patch.error = input.error
+            if (input.status === "queued" && input.error === undefined) patch.error = null
 
             db.update(PendingMessageTable)
               .set(patch)

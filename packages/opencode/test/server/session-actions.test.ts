@@ -167,6 +167,50 @@ describe("session action routes", () => {
     })
   })
 
+  test("queue update route resumes queued dispatch when a failed item is requeued", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const session = await Session.create({})
+        const app = Server.Default()
+        const runQueuedIfIdle = spyOn(SessionPrompt, "runQueuedIfIdle").mockResolvedValue()
+
+        const pending = await SessionQueue.enqueue({
+          sessionID: session.id,
+          mode: "queue",
+          payload: promptPayload("retry me"),
+        })
+
+        await SessionQueue.update({
+          sessionID: session.id,
+          pendingMessageID: pending.id,
+          status: "failed",
+          error: { message: "boom", code: "APIError" },
+        })
+
+        const resumed = await app.request(`/session/${session.id}/queue/${pending.id}`, {
+          method: "PATCH",
+          headers: {
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            status: "queued",
+          }),
+        })
+
+        expect(resumed.status).toBe(200)
+        expect((await resumed.json()) as SessionQueue.PendingMessage).toMatchObject({
+          id: pending.id,
+          status: "queued",
+        })
+        expect(runQueuedIfIdle).toHaveBeenCalledWith(session.id)
+
+        await Session.remove(session.id)
+      },
+    })
+  })
+
   test("submit route executes immediately when the session is idle", async () => {
     await using tmp = await tmpdir({ git: true })
     await Instance.provide({

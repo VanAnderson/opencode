@@ -72,6 +72,7 @@ export namespace SessionPrompt {
   export interface Interface {
     readonly assertNotBusy: (sessionID: SessionID) => Effect.Effect<void, Session.BusyError>
     readonly cancel: (sessionID: SessionID) => Effect.Effect<void>
+    readonly runQueuedIfIdle: (sessionID: SessionID) => Effect.Effect<void>
     readonly prompt: (input: SessionPromptInput.PromptInput) => Effect.Effect<MessageV2.WithParts>
     readonly loop: (input: SessionPromptInput.LoopInput) => Effect.Effect<MessageV2.WithParts>
     readonly shell: (input: SessionPromptInput.ShellInput) => Effect.Effect<MessageV2.WithParts>
@@ -109,14 +110,16 @@ export namespace SessionPrompt {
         Effect.fn("SessionPrompt.state")(function* () {
           const runners = new Map<string, Runner<MessageV2.WithParts>>()
           const dispatching = new Set<SessionID>()
+          const redispatch = new Set<SessionID>()
           yield* Effect.addFinalizer(
             Effect.fnUntraced(function* () {
               yield* Effect.forEach(runners.values(), (r) => r.cancel, { concurrency: "unbounded", discard: true })
               runners.clear()
               dispatching.clear()
+              redispatch.clear()
             }),
           )
-          return { runners, dispatching }
+          return { runners, dispatching, redispatch }
         }),
       )
 
@@ -141,68 +144,92 @@ export namespace SessionPrompt {
         supersedesExecutionID: pending.supersedesExecutionID,
       })
 
-      const dispatchQueued = Effect.fn("SessionPrompt.dispatchQueued")(function* (sessionID: SessionID) {
+      const dispatchQueued: (sessionID: SessionID) => Effect.Effect<void> = Effect.fn("SessionPrompt.dispatchQueued")(
+        function* (sessionID: SessionID) {
+          const s = yield* InstanceState.get(state)
+          return yield* Effect.acquireUseRelease(
+            Effect.sync(() => {
+              if (s.dispatching.has(sessionID)) return false
+              s.dispatching.add(sessionID)
+              return true
+            }),
+            (acquired) =>
+              !acquired
+                ? Effect.void
+                : Effect.gen(function* () {
+                    while (true) {
+                      const pending = yield* queue.claimHead(sessionID)
+                      if (!pending) return
+
+                      const exit = yield* Effect.exit(
+                        pending.payload.kind === "prompt"
+                          ? prompt({
+                              sessionID,
+                              ...pending.payload,
+                              submission: queueSubmission(pending),
+                            })
+                          : command({
+                              sessionID,
+                              ...pending.payload,
+                              submission: queueSubmission(pending),
+                            }),
+                      )
+
+                      if (Exit.isFailure(exit)) {
+                        const error = Cause.squash(exit.cause)
+                        yield* queue.fail({
+                          sessionID,
+                          pendingMessageID: pending.id,
+                          error: {
+                            message:
+                              error instanceof Error
+                                ? error.message || error.name || String(error)
+                                : String(error),
+                          },
+                        })
+                        return
+                      }
+
+                      if (exit.value.info.role === "assistant" && exit.value.info.error) {
+                        yield* queue.fail({
+                          sessionID,
+                          pendingMessageID: pending.id,
+                          error: toQueueError(exit.value.info.error),
+                        })
+                        return
+                      }
+
+                      yield* queue.complete({
+                        sessionID,
+                        pendingMessageID: pending.id,
+                      })
+                    }
+                  }),
+            (acquired) =>
+              !acquired
+                ? Effect.void
+                : Effect.gen(function* () {
+                    s.dispatching.delete(sessionID)
+                    if (!s.redispatch.delete(sessionID)) return
+                    const runner = s.runners.get(sessionID)
+                    if (runner?.busy) return
+                    yield* dispatchQueued(sessionID)
+                  }),
+          )
+        },
+      )
+
+      const runQueuedIfIdle: (sessionID: SessionID) => Effect.Effect<void> = Effect.fn(
+        "SessionPrompt.runQueuedIfIdle",
+      )(function* (sessionID: SessionID) {
         const s = yield* InstanceState.get(state)
-        return yield* Effect.acquireUseRelease(
-          Effect.sync(() => {
-            if (s.dispatching.has(sessionID)) return false
-            s.dispatching.add(sessionID)
-            return true
-          }),
-          (acquired) =>
-            !acquired
-              ? Effect.void
-              : Effect.gen(function* () {
-                  while (true) {
-                    const pending = yield* queue.claimHead(sessionID)
-                    if (!pending) return
-
-                    const exit = yield* Effect.exit(
-                      pending.payload.kind === "prompt"
-                        ? prompt({
-                            sessionID,
-                            ...pending.payload,
-                            submission: queueSubmission(pending),
-                          })
-                        : command({
-                            sessionID,
-                            ...pending.payload,
-                            submission: queueSubmission(pending),
-                          }),
-                    )
-
-                    if (Exit.isFailure(exit)) {
-                      const error = Cause.squash(exit.cause)
-                      yield* queue.fail({
-                        sessionID,
-                        pendingMessageID: pending.id,
-                        error: {
-                          message:
-                            error instanceof Error
-                              ? error.message || error.name || String(error)
-                              : String(error),
-                        },
-                      })
-                      return
-                    }
-
-                    if (exit.value.info.role === "assistant" && exit.value.info.error) {
-                      yield* queue.fail({
-                        sessionID,
-                        pendingMessageID: pending.id,
-                        error: toQueueError(exit.value.info.error),
-                      })
-                      return
-                    }
-
-                    yield* queue.complete({
-                      sessionID,
-                      pendingMessageID: pending.id,
-                    })
-                  }
-                }),
-          (acquired) => (acquired ? Effect.sync(() => s.dispatching.delete(sessionID)) : Effect.void),
-        )
+        const runner = s.runners.get(sessionID)
+        if (runner?.busy) return
+        if (s.dispatching.has(sessionID)) {
+          s.redispatch.add(sessionID)
+          return
+        }
+        yield* dispatchQueued(sessionID)
       })
 
       const getRunner = (runners: Map<string, Runner<MessageV2.WithParts>>, sessionID: SessionID) => {
@@ -212,7 +239,7 @@ export namespace SessionPrompt {
           onIdle: Effect.gen(function* () {
             runners.delete(sessionID)
             yield* status.set(sessionID, { type: "idle" })
-            yield* dispatchQueued(sessionID).pipe(
+            yield* runQueuedIfIdle(sessionID).pipe(
               Effect.catchCause((cause) =>
                 Effect.sync(() =>
                   log.error("failed to dispatch queued follow-up", { sessionID, error: Cause.squash(cause) }),
@@ -1813,6 +1840,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       return Service.of({
         assertNotBusy,
         cancel,
+        runQueuedIfIdle,
         prompt,
         loop,
         shell,
@@ -1866,6 +1894,10 @@ NOTE: At any point in time through this workflow you should feel free to ask the
 
   export async function cancel(sessionID: SessionID) {
     return runPromise((svc) => svc.cancel(SessionID.zod.parse(sessionID)))
+  }
+
+  export async function runQueuedIfIdle(sessionID: SessionID) {
+    return runPromise((svc) => svc.runQueuedIfIdle(SessionID.zod.parse(sessionID)))
   }
 
   export const LoopInput = SessionPromptInput.LoopInput
