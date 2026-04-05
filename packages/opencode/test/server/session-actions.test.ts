@@ -345,6 +345,88 @@ describe("session action routes", () => {
     })
   })
 
+  test("submit route interrupts active work and blocks stale queued items for steer", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const session = await Session.create({})
+        const active = await user(session.id, "active work")
+        const app = Server.Default()
+        spyOn(SessionStatus, "get").mockResolvedValue({ type: "busy" })
+        const cancel = spyOn(SessionPrompt, "cancel").mockResolvedValue()
+        const block = spyOn(SessionQueue, "markBlockedAfterInterrupt").mockResolvedValue([])
+        const runQueuedIfIdle = spyOn(SessionPrompt, "runQueuedIfIdle").mockResolvedValue()
+
+        const existing = await SessionQueue.enqueue({
+          sessionID: session.id,
+          mode: "queue",
+          payload: promptPayload("stale"),
+          createdAgainstExecutionID: active.id,
+        })
+
+        const res = await app.request(`/session/${session.id}/submit`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            mode: "steer",
+            payload: promptPayload("urgent"),
+            source: "app",
+          }),
+        })
+
+        expect(res.status).toBe(200)
+        const body = (await res.json()) as {
+          kind: "queued"
+          pending: SessionQueue.PendingMessage
+          queue: SessionQueue.PendingMessage[]
+          status: { type: "busy" }
+        }
+        expect(body).toMatchObject({
+          kind: "queued",
+          pending: {
+            sessionID: session.id,
+            mode: "steer",
+            position: 0,
+            createdAgainstExecutionID: active.id,
+            supersedesExecutionID: active.id,
+          },
+          queue: [
+            {
+              sessionID: session.id,
+              mode: "steer",
+              position: 0,
+              createdAgainstExecutionID: active.id,
+              supersedesExecutionID: active.id,
+            },
+            {
+              id: existing.id,
+              sessionID: session.id,
+              mode: "queue",
+              position: 1,
+              createdAgainstExecutionID: active.id,
+            },
+          ],
+          status: { type: "busy" },
+        })
+
+        await new Promise((resolve) => setTimeout(resolve, 0))
+
+        expect(cancel).toHaveBeenCalledWith(session.id)
+        expect(block).toHaveBeenCalledWith({
+          sessionID: session.id,
+          createdAgainstExecutionID: active.id,
+          excludePendingMessageIDs: [body.pending.id],
+        })
+        expect(runQueuedIfIdle).toHaveBeenCalledWith(session.id)
+
+        await Session.remove(session.id)
+      },
+    })
+  })
+
   test("queue reorder, promote, and clear routes return updated queue state", async () => {
     await using tmp = await tmpdir({ git: true })
     await Instance.provide({

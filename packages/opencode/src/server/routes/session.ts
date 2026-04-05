@@ -46,6 +46,18 @@ const SessionSubmitResponse = z.discriminatedUnion("kind", [
   }),
 ])
 
+function activeExecutionID(sessionID: SessionID) {
+  const messages = MessageV2.filterCompacted(MessageV2.stream(sessionID))
+  const activeAssistant = messages.findLast(
+    (msg): msg is MessageV2.WithParts & { info: MessageV2.Assistant } => msg.info.role === "assistant" && !msg.info.finish,
+  )
+  if (activeAssistant) return activeAssistant.info.parentID
+  const lastUser = messages.findLast(
+    (msg): msg is MessageV2.WithParts & { info: MessageV2.User } => msg.info.role === "user",
+  )
+  return lastUser?.info.id
+}
+
 export const SessionRoutes = lazy(() =>
   new Hono()
     .get(
@@ -243,18 +255,39 @@ export const SessionRoutes = lazy(() =>
 
         const status = await SessionStatus.get(sessionID)
         if (status.type !== "idle") {
+          const executionID = activeExecutionID(sessionID)
           const queued = await SessionQueue.enqueue({
             sessionID,
             mode: body.mode,
             payload: body.payload,
             source: body.source,
-            createdAgainstExecutionID: body.createdAgainstExecutionID,
-            supersedesExecutionID: body.supersedesExecutionID,
+            createdAgainstExecutionID: body.createdAgainstExecutionID ?? executionID,
+            supersedesExecutionID: body.supersedesExecutionID ?? (body.mode === "steer" ? executionID : undefined),
           })
           const pending =
             body.mode === "steer"
               ? await SessionQueue.promote({ sessionID, pendingMessageID: queued.id })
               : queued
+          if (body.mode === "steer") {
+            void SessionPrompt.cancel(sessionID)
+              .then(async () => {
+                if (executionID) {
+                  await SessionQueue.markBlockedAfterInterrupt({
+                    sessionID,
+                    createdAgainstExecutionID: executionID,
+                    excludePendingMessageIDs: [pending.id],
+                  })
+                }
+                await SessionPrompt.runQueuedIfIdle(sessionID)
+              })
+              .catch((error) => {
+                log.error("failed to process steer interruption", {
+                  sessionID,
+                  pendingMessageID: pending.id,
+                  error,
+                })
+              })
+          }
           return c.json({
             kind: "queued" as const,
             pending,
