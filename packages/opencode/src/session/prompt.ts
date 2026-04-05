@@ -147,6 +147,28 @@ export namespace SessionPrompt {
         supersedesExecutionID: pending.supersedesExecutionID,
       })
 
+      const reminderText = (input: { text: string; submission?: MessageV2.Submission }) => {
+        if (input.submission?.mode === "steer") {
+          return [
+            "<system-reminder>",
+            "The user interrupted the previous work with the following message:",
+            input.text,
+            "",
+            "This message supersedes the previous in-flight work. Drop stale assumptions from the interrupted attempt, address this message first, and only continue tasks that are still relevant afterward.",
+            "</system-reminder>",
+          ].join("\n")
+        }
+
+        return [
+          "<system-reminder>",
+          "The user sent the following message:",
+          input.text,
+          "",
+          "Please address this message and continue with your tasks.",
+          "</system-reminder>",
+        ].join("\n")
+      }
+
       const dispatchQueued: (sessionID: SessionID) => Effect.Effect<void> = Effect.fn("SessionPrompt.dispatchQueued")(
         function* (sessionID: SessionID) {
           const s = yield* InstanceState.get(state)
@@ -1647,14 +1669,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                     for (const p of m.parts) {
                       if (p.type !== "text" || p.ignored || p.synthetic) continue
                       if (!p.text.trim()) continue
-                      p.text = [
-                        "<system-reminder>",
-                        "The user sent the following message:",
-                        p.text,
-                        "",
-                        "Please address this message and continue with your tasks.",
-                        "</system-reminder>",
-                      ].join("\n")
+                      p.text = reminderText({ text: p.text, submission: m.info.submission })
                     }
                   }
                 }
