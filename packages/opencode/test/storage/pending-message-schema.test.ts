@@ -26,43 +26,47 @@ function createTestDb() {
 
 describe("pending_message schema migration", () => {
   test("creates the pending_message table with queue indexes", () => {
-    using sqlite = createTestDb()
+    const sqlite = createTestDb()
 
-    const columns = sqlite
-      .query("PRAGMA table_info('pending_message')")
-      .all() as Array<{ name: string }>
-    const indexes = sqlite
-      .query("PRAGMA index_list('pending_message')")
-      .all() as Array<{ name: string }>
-    const foreignKeys = sqlite
-      .query("PRAGMA foreign_key_list('pending_message')")
-      .all() as Array<{ table: string; from: string; on_delete: string }>
+    try {
+      const columns = sqlite
+        .query("PRAGMA table_info('pending_message')")
+        .all() as Array<{ name: string }>
+      const indexes = sqlite
+        .query("PRAGMA index_list('pending_message')")
+        .all() as Array<{ name: string }>
+      const foreignKeys = sqlite
+        .query("PRAGMA foreign_key_list('pending_message')")
+        .all() as Array<{ table: string; from: string; on_delete: string }>
 
-    expect(columns.map((item) => item.name)).toEqual([
-      "id",
-      "session_id",
-      "position",
-      "mode",
-      "status",
-      "payload",
-      "source",
-      "created_against_execution_id",
-      "supersedes_execution_id",
-      "error",
-      "time_created",
-      "time_updated",
-    ])
-    expect(indexes.map((item) => item.name)).toEqual(
-      expect.arrayContaining(["pending_message_session_position_idx", "pending_message_session_status_idx"]),
-    )
-    expect(foreignKeys).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          table: "session",
-          from: "session_id",
-          on_delete: "CASCADE",
-        }),
-      ]),
-    )
+      expect(columns.map((item) => item.name)).toEqual([
+        "id",
+        "session_id",
+        "position",
+        "mode",
+        "status",
+        "payload",
+        "source",
+        "created_against_execution_id",
+        "supersedes_execution_id",
+        "error",
+        "time_created",
+        "time_updated",
+      ])
+      expect(indexes.map((item) => item.name)).toEqual(
+        expect.arrayContaining(["pending_message_session_position_idx", "pending_message_session_status_idx"]),
+      )
+      expect(foreignKeys).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            table: "session",
+            from: "session_id",
+            on_delete: "CASCADE",
+          }),
+        ]),
+      )
+    } finally {
+      sqlite.close()
+    }
   })
 })
