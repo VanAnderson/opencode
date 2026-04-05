@@ -38,6 +38,7 @@ import { DialogSkill } from "../dialog-skill"
 import { CONSOLE_MANAGED_ICON, consoleManagedProviderLabel } from "@tui/util/provider-origin"
 import { DialogSessionQueue } from "../dialog-session-queue"
 import { dispatchPromptSubmit, type BusySubmitMode, type EditingPendingMessage } from "./submit"
+import { nextInterruptState } from "./interrupt"
 import { pendingQueueSummary } from "../../util/session-queue"
 
 export type PromptProps = {
@@ -302,13 +303,14 @@ export function Prompt(props: PromptProps) {
           }
           if (!props.sessionID) return
 
-          setStore("interrupt", store.interrupt + 1)
+          const nextInterrupt = nextInterruptState(store.interrupt)
+          setStore("interrupt", nextInterrupt.count)
 
           setTimeout(() => {
             setStore("interrupt", 0)
           }, 5000)
 
-          if (store.interrupt >= 2) {
+          if (nextInterrupt.shouldAbort) {
             sdk.client.session.abort({
               sessionID: props.sessionID,
             })
