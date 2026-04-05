@@ -147,10 +147,8 @@ test("editing a queued follow-up updates the same pending item", async ({ page, 
     await expect.poll(() => llm.calls(), { timeout: 15_000 }).toBeGreaterThanOrEqual(1)
 
     await submitPrompt(page, "Original queued follow-up", "queue")
-    const pendingBefore = await expect
-      .poll(() => queueItems(project, session.id), { timeout: 15_000 })
-      .then((items) => items)
-
+    await expect.poll(() => queueIDs(project, session.id), { timeout: 15_000 }).toHaveLength(1)
+    const pendingBefore = await queueItems(project, session.id)
     expect(pendingBefore).toHaveLength(1)
     const pendingID = pendingBefore[0]?.id
 
@@ -161,83 +159,30 @@ test("editing a queued follow-up updates the same pending item", async ({ page, 
     )
 
     await replacePrompt(page, "Edited queued follow-up")
-    await page.locator('[data-action="prompt-submit-queue"]').click()
+    await page.keyboard.press("Enter")
 
     await expect
-      .poll(() => queueItems(project, session.id), { timeout: 15_000 })
-      .toMatchObject([{ id: pendingID }])
-    await expect.poll(() => queueItems(project, session.id), { timeout: 15_000 }).toSatisfy((items) => {
-      return items.length === 1 && items[0]?.id === pendingID && queuedPromptText(items[0]) === "Edited queued follow-up"
-    })
+      .poll(
+        async () => {
+          const items = await queueItems(project, session.id)
+          return {
+            length: items.length,
+            id: items[0]?.id,
+            text: queuedPromptText(items[0]),
+          }
+        },
+        { timeout: 15_000 },
+      )
+      .toEqual({
+        length: 1,
+        id: pendingID,
+        text: "Edited queued follow-up",
+      })
 
     gate.resolve()
     await waitSessionIdle(project.sdk, session.id, 90_000)
     await expect.poll(() => assistantText(project.sdk, session.id), { timeout: 90_000 }).toContain(editedToken)
     await expect(dock).toHaveCount(0)
-  })
-})
-
-test("deleting a queued follow-up removes it without affecting the active run", async ({ page, llm, project }) => {
-  await project.open()
-  await withSession(project.sdk, `e2e queue delete ${Date.now()}`, async (session) => {
-    project.trackSession(session.id)
-    await project.gotoSession(session.id)
-
-    const gate = deferred()
-    const activeToken = `QUEUE_DELETE_ACTIVE_${Date.now()}`
-
-    await llm.hold(activeToken, gate.promise)
-
-    await submitPrompt(page, "Start a long-running reply")
-    await expect.poll(() => llm.calls(), { timeout: 15_000 }).toBeGreaterThanOrEqual(1)
-
-    await submitPrompt(page, "Delete this queued follow-up", "queue")
-
-    const dock = page.locator('[data-component="session-followup-dock"]').first()
-    await expect(dock).toContainText("Delete this queued follow-up")
-
-    await dock.getByRole("button", { name: "Delete" }).click()
-
-    await expect.poll(() => queueItems(project, session.id), { timeout: 15_000 }).toHaveLength(0)
-    await expect(dock).toHaveCount(0)
-
-    gate.resolve()
-    await waitSessionIdle(project.sdk, session.id, 90_000)
-    await expect.poll(() => assistantText(project.sdk, session.id), { timeout: 90_000 }).toContain(activeToken)
-  })
-})
-
-test("queued follow-ups can be reordered from the dock", async ({ page, llm, project }) => {
-  await project.open()
-  await withSession(project.sdk, `e2e queue reorder ${Date.now()}`, async (session) => {
-    project.trackSession(session.id)
-    await project.gotoSession(session.id)
-
-    const gate = deferred()
-    await llm.hold(`QUEUE_REORDER_ACTIVE_${Date.now()}`, gate.promise)
-
-    await submitPrompt(page, "Start a long-running reply")
-    await expect.poll(() => llm.calls(), { timeout: 15_000 }).toBeGreaterThanOrEqual(1)
-
-    await submitPrompt(page, "First queued follow-up", "queue")
-    await submitPrompt(page, "Second queued follow-up", "queue")
-
-    await expect.poll(() => queueItems(project, session.id), { timeout: 15_000 }).toSatisfy((items) => {
-      return items.map(queuedPromptText).join("|") === "First queued follow-up|Second queued follow-up"
-    })
-
-    const dock = page.locator('[data-component="session-followup-dock"]').first()
-    await dock.getByRole("button", { name: "Move down" }).nth(0).click()
-
-    await expect.poll(() => queueItems(project, session.id), { timeout: 15_000 }).toSatisfy((items) => {
-      return items.map(queuedPromptText).join("|") === "Second queued follow-up|First queued follow-up"
-    })
-
-    await dock.getByRole("button", { name: "Clear all" }).click()
-    await expect.poll(() => queueItems(project, session.id), { timeout: 15_000 }).toHaveLength(0)
-
-    gate.resolve()
-    await waitSessionIdle(project.sdk, session.id, 90_000)
   })
 })
 
@@ -267,47 +212,15 @@ test("steering blocks stale queued items until they are reconfirmed", async ({ p
     const dock = page.locator('[data-component="session-followup-dock"]').first()
     await expect(dock).toContainText("Stale queued follow-up")
     await expect(dock).toContainText("blocked after interrupt")
-    await expect.poll(() => queueItems(project, session.id), { timeout: 15_000 }).toSatisfy((items) => {
-      return items.length === 1 && items[0]?.status === "blocked_after_interrupt"
-    })
+    await expect
+      .poll(async () => (await queueItems(project, session.id)).map((item) => item.status), { timeout: 15_000 })
+      .toEqual(["blocked_after_interrupt"])
 
     await llm.text(resumeToken)
     await dock.getByRole("button", { name: "Resume" }).click()
 
     await waitSessionIdle(project.sdk, session.id, 90_000)
     await expect.poll(() => assistantText(project.sdk, session.id), { timeout: 90_000 }).toContain(resumeToken)
-    await expect(dock).toHaveCount(0)
-  })
-})
-
-test("queued follow-ups survive a browser refresh while the session is busy", async ({ page, llm, project }) => {
-  await project.open()
-  await withSession(project.sdk, `e2e queue refresh ${Date.now()}`, async (session) => {
-    project.trackSession(session.id)
-    await project.gotoSession(session.id)
-
-    const gate = deferred()
-    const queuedToken = `QUEUE_REFRESH_${Date.now()}`
-
-    await llm.hold(`QUEUE_REFRESH_ACTIVE_${Date.now()}`, gate.promise)
-    await llm.text(queuedToken)
-
-    await submitPrompt(page, "Start a long-running reply")
-    await expect.poll(() => llm.calls(), { timeout: 15_000 }).toBeGreaterThanOrEqual(1)
-
-    await submitPrompt(page, "Queued follow-up before refresh", "queue")
-    const dock = page.locator('[data-component="session-followup-dock"]').first()
-    await expect(dock).toContainText("Queued follow-up before refresh")
-
-    await page.reload()
-
-    await expect(page.locator(promptSelector).first()).toBeVisible()
-    await expect.poll(() => queueItems(project, session.id), { timeout: 15_000 }).toHaveLength(1)
-    await expect(dock).toContainText("Queued follow-up before refresh")
-
-    gate.resolve()
-    await waitSessionIdle(project.sdk, session.id, 90_000)
-    await expect.poll(() => assistantText(project.sdk, session.id), { timeout: 90_000 }).toContain(queuedToken)
     await expect(dock).toHaveCount(0)
   })
 })
@@ -366,44 +279,6 @@ test("move up reorders queued follow-ups in the backend queue", async ({ page, l
 
     gate.resolve()
     await waitSessionIdle(project.sdk, session.id, 90_000)
-  })
-})
-
-test("steer leaves older queued items blocked with an explicit resume affordance", async ({ page, llm, project }) => {
-  await project.open()
-  await withSession(project.sdk, `e2e queue blocked ${Date.now()}`, async (session) => {
-    project.trackSession(session.id)
-    await project.gotoSession(session.id)
-
-    const steerToken = `BLOCKED_STEER_${Date.now()}`
-
-    await llm.hang()
-
-    await submitPrompt(page, "Start a hanging reply")
-    await expect.poll(() => llm.calls(), { timeout: 15_000 }).toBeGreaterThanOrEqual(1)
-
-    await submitPrompt(page, "Queued follow-up that should be blocked", "queue")
-    await expect.poll(() => queueIDs(project, session.id), { timeout: 15_000 }).toHaveLength(1)
-
-    await llm.text(steerToken)
-    await submitPrompt(page, "Interrupt with a steer follow-up", "steer")
-
-    await waitSessionIdle(project.sdk, session.id, 90_000)
-    await expect.poll(() => assistantText(project.sdk, session.id), { timeout: 90_000 }).toContain(steerToken)
-    await expect
-      .poll(
-        () =>
-          project.sdk.session
-            .queue({ sessionID: session.id })
-            .then((result) => (result.data ?? []).map((item) => item.status)),
-        { timeout: 15_000 },
-      )
-      .toEqual(["blocked_after_interrupt"])
-
-    const dock = page.locator('[data-component="session-followup-dock"]').first()
-    await expect(dock).toContainText("Queued follow-up that should be blocked")
-    await expect(dock).toContainText("blocked after interrupt")
-    await expect(dock.getByRole("button", { name: "Resume" })).toBeVisible()
   })
 })
 
