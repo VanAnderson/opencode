@@ -336,6 +336,46 @@ test("queued follow-ups persist across page reload and reconnect", async ({ page
   })
 })
 
+test("queued follow-ups stay in sync across two browser tabs on the same session", async ({ page, llm, project }) => {
+  await project.open()
+  await withSession(project.sdk, `e2e queue two tabs ${Date.now()}`, async (session) => {
+    project.trackSession(session.id)
+    await project.gotoSession(session.id)
+
+    const gate = deferred()
+    await llm.hold(`QUEUE_TABS_${Date.now()}`, gate.promise)
+
+    await submitPrompt(page, "Start a long-running reply")
+    await expect.poll(() => llm.calls(), { timeout: 15_000 }).toBeGreaterThanOrEqual(1)
+
+    const page2 = await page.context().newPage()
+    try {
+      await page2.goto(page.url())
+      await expect(page2.locator(promptSelector).first()).toBeVisible()
+
+      await submitPrompt(page, "Queued follow-up shared across tabs", "queue")
+
+      const dock1 = page.locator('[data-component="session-followup-dock"]').first()
+      const dock2 = page2.locator('[data-component="session-followup-dock"]').first()
+
+      await expect(dock1).toContainText("Queued follow-up shared across tabs")
+      await expect(dock2).toContainText("Queued follow-up shared across tabs")
+      await expect.poll(() => queueIDs(project, session.id), { timeout: 15_000 }).toHaveLength(1)
+
+      await dock2.getByRole("button", { name: "Delete" }).click()
+
+      await expect.poll(() => queueIDs(project, session.id), { timeout: 15_000 }).toHaveLength(0)
+      await expect(dock1).toHaveCount(0)
+      await expect(dock2).toHaveCount(0)
+    } finally {
+      await page2.close().catch(() => undefined)
+    }
+
+    gate.resolve()
+    await waitSessionIdle(project.sdk, session.id, 90_000)
+  })
+})
+
 test("legacy followup.v1 drafts migrate into the backend queue on session load", async ({ page, project }) => {
   await project.open()
   await withSession(project.sdk, `e2e queue migration ${Date.now()}`, async (session) => {
