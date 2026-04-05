@@ -1211,6 +1211,7 @@ pluginIt.live(
         const firstGate = defer<void>()
         const secondGate = defer<void>()
 
+        yield* llm.reset
         yield* llm.hold("first reply", firstGate.promise)
         yield* llm.hold("second reply", secondGate.promise)
         yield* user(chat.id, "hello first")
@@ -1967,6 +1968,139 @@ it.live(
         )
         expect(executedUsers.map((msg) => msg.info.submission?.mode)).toEqual(["steer", "queue", "queue"])
         expect(yield* llm.calls).toBe(4)
+      }),
+      { git: true, config: providerCfg },
+    ),
+  10_000,
+)
+
+it.live(
+  "blocked queue items can be resumed after steer interruption",
+  () =>
+    provideTmpdirServer(
+      Effect.fnUntraced(function* ({ dir, llm }) {
+        const chat = yield* Effect.promise(() => Session.create({ title: "Resume blocked queue" }))
+        const app = Server.Default()
+
+        const request = (path: string, init?: RequestInit) =>
+          Effect.promise(() =>
+            Promise.resolve(
+              app.request(path, {
+                ...init,
+                headers: {
+                  ...(init?.headers ?? {}),
+                  "x-opencode-directory": dir,
+                },
+              }),
+            ),
+          )
+
+        const submit = (body: {
+          mode: "queue" | "steer"
+          payload: SessionQueue.PendingMessagePayload
+          source: string
+        }) =>
+          request(`/session/${chat.id}/submit`, {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+            },
+            body: JSON.stringify(body),
+          })
+
+        yield* llm.pushMatch((hit) => JSON.stringify(hit.body).includes("hello first"), reply().hang().item())
+        yield* llm.textMatch((hit) => JSON.stringify(hit.body).includes("hello steer"), "steered reply")
+        yield* llm.textMatch((hit) => JSON.stringify(hit.body).includes("hello stale resume"), "stale resumed reply")
+        yield* user(chat.id, "hello first")
+
+        const first = yield* Effect.promise(() => SessionPrompt.loop({ sessionID: chat.id })).pipe(Effect.forkChild)
+        yield* llm.wait(1)
+
+        const stale = yield* submit({
+          mode: "queue",
+          payload: {
+            kind: "prompt",
+            agent: "build",
+            model: ref,
+            variant: "default",
+            parts: [{ type: "text", text: "hello stale resume" }],
+          },
+          source: "test",
+        })
+        expect(stale.status).toBe(200)
+        const staleBody = (yield* Effect.promise(() => stale.json())) as {
+          kind: "queued"
+          pending: SessionQueue.PendingMessage
+        }
+
+        const steer = yield* submit({
+          mode: "steer",
+          payload: {
+            kind: "prompt",
+            agent: "build",
+            model: ref,
+            variant: "default",
+            parts: [{ type: "text", text: "hello steer" }],
+          },
+          source: "test",
+        })
+        expect(steer.status).toBe(200)
+
+        const firstExit = yield* Fiber.await(first)
+        expect(Exit.isSuccess(firstExit)).toBe(true)
+        if (Exit.isSuccess(firstExit) && firstExit.value.info.role === "assistant") {
+          expect(firstExit.value.info.error?.name).toBe("MessageAbortedError")
+        }
+
+        yield* Effect.promise(async () => {
+          const end = Date.now() + 5000
+          while (Date.now() < end) {
+            const pending = await SessionQueue.list(chat.id)
+            const blocked = pending.find((item) => item.id === staleBody.pending.id)
+            if (blocked?.status === "blocked_after_interrupt") return
+            await new Promise((done) => setTimeout(done, 20))
+          }
+          throw new Error("timed out waiting for blocked queue item")
+        })
+
+        const resumed = yield* request(`/session/${chat.id}/queue/${staleBody.pending.id}`, {
+          method: "PATCH",
+          headers: {
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            status: "queued",
+          }),
+        })
+        expect(resumed.status).toBe(200)
+
+        yield* Effect.promise(async () => {
+          const end = Date.now() + 5000
+          while (Date.now() < end) {
+            const pending = await SessionQueue.list(chat.id)
+            const msgs = await Session.messages({ sessionID: chat.id })
+            const resumedUser = msgs.find((msg): msg is MessageV2.WithParts & { info: MessageV2.User } => {
+              if (msg.info.role !== "user") return false
+              return msg.parts.some((part) => part.type === "text" && part.text === "hello stale resume")
+            })
+            const resumedAssistant = msgs.find((msg): msg is MessageV2.WithParts & { info: MessageV2.Assistant } => {
+              if (msg.info.role !== "assistant") return false
+              return msg.parts.some((part) => part.type === "text" && part.text === "stale resumed reply")
+            })
+            if (pending.length === 0 && resumedUser && resumedAssistant) return resumedUser
+            await new Promise((done) => setTimeout(done, 20))
+          }
+          throw new Error("timed out waiting for resumed blocked item")
+        }).pipe(
+          Effect.tap((resumedUser) =>
+            Effect.sync(() => {
+              expect(resumedUser.info.submission).toMatchObject({
+                mode: "queue",
+                createdFromPendingMessageID: staleBody.pending.id,
+              })
+            }),
+          ),
+        )
       }),
       { git: true, config: providerCfg },
     ),
