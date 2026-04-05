@@ -373,7 +373,7 @@ describe("prompt submit worktree selection", () => {
       resetHistoryNavigation: () => undefined,
       setMode: () => undefined,
       setPopover: () => undefined,
-      shouldQueue: () => true,
+      followupMode: () => "queue",
       onSubmit: () => {
         submitCount += 1
       },
@@ -400,5 +400,88 @@ describe("prompt submit worktree selection", () => {
     expect(promptAsyncCalls).toEqual([])
     expect(optimistic).toEqual([])
     expect(submitCount).toBe(1)
+  })
+
+  test("uses the queue override when editing an existing pending item", async () => {
+    params = { id: "session-1" }
+    const queued: Array<{ pendingMessageID?: string; sessionID: string; mode: "queue" | "steer" }> = []
+    let submitCount = 0
+
+    const submit = createPromptSubmit({
+      info: () => ({ id: "session-1" }),
+      imageAttachments: () => [],
+      commentCount: () => 0,
+      autoAccept: () => false,
+      mode: () => "normal",
+      working: () => true,
+      editor: () => undefined,
+      queueScroll: () => undefined,
+      promptLength: (value) => value.reduce((sum, part) => sum + ("content" in part ? part.content.length : 0), 0),
+      addToHistory: () => undefined,
+      resetHistoryNavigation: () => undefined,
+      setMode: () => undefined,
+      setPopover: () => undefined,
+      followupMode: () => "queue",
+      editingQueueID: () => "pending-1",
+      onQueue: async ({ draft, pendingMessageID, mode }) => {
+        queued.push({ pendingMessageID, sessionID: draft.sessionID, mode })
+        return true
+      },
+      onSubmit: () => {
+        submitCount += 1
+      },
+    })
+
+    const event = { preventDefault: () => undefined } as unknown as Event
+
+    await submit.handleSubmit(event)
+
+    expect(queued).toEqual([{ pendingMessageID: "pending-1", sessionID: "session-1", mode: "queue" }])
+    expect(submitted).toEqual([])
+    expect(promptAsyncCalls).toEqual([])
+    expect(submitCount).toBe(1)
+  })
+
+  test("steers busy normal prompts through session.submit", async () => {
+    params = { id: "session-1" }
+
+    const submit = createPromptSubmit({
+      info: () => ({ id: "session-1" }),
+      imageAttachments: () => [],
+      commentCount: () => 0,
+      autoAccept: () => false,
+      mode: () => "normal",
+      working: () => true,
+      editor: () => undefined,
+      queueScroll: () => undefined,
+      promptLength: (value) => value.reduce((sum, part) => sum + ("content" in part ? part.content.length : 0), 0),
+      addToHistory: () => undefined,
+      resetHistoryNavigation: () => undefined,
+      setMode: () => undefined,
+      setPopover: () => undefined,
+      followupMode: () => "steer",
+      onSubmit: () => undefined,
+    })
+
+    const event = { preventDefault: () => undefined } as unknown as Event
+
+    await submit.handleSubmit(event)
+
+    expect(submitted).toHaveLength(1)
+    expect(submitted[0]).toMatchObject({
+      directory: "/repo/main",
+      input: {
+        sessionID: "session-1",
+        mode: "steer",
+        source: "app",
+        payload: {
+          kind: "prompt",
+          agent: "agent",
+          model: { providerID: "provider", modelID: "model" },
+        },
+      },
+    })
+    expect(promptAsyncCalls).toEqual([])
+    expect(optimistic).toEqual([])
   })
 })
