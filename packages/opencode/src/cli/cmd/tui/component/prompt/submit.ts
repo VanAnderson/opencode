@@ -1,6 +1,10 @@
 import type { CommandInput, PromptInput } from "@/session/prompt-input"
 
 export type BusySubmitMode = "queue" | "steer"
+export type EditingPendingMessage = {
+  pendingMessageID: string
+  mode: BusySubmitMode
+}
 
 type ModelRef = {
   providerID: string
@@ -48,6 +52,28 @@ type SessionClient = {
     prompt(input: Omit<PromptRequest, "kind">): Promise<unknown>
     command(input: Omit<CommandRequest, "kind">): Promise<unknown>
     shell(input: Omit<ShellRequest, "kind">): Promise<unknown>
+    queueUpdate(input: {
+      sessionID: string
+      pendingMessageID: string
+      mode?: BusySubmitMode
+      payload?:
+        | {
+            kind: "prompt"
+            agent: string
+            model: ModelRef
+            variant?: string
+            parts: PromptInput["parts"]
+          }
+        | {
+            kind: "command"
+            command: string
+            arguments: string
+            agent: string
+            model: string
+            variant?: string
+            parts?: CommandInput["parts"]
+          }
+    }): Promise<unknown>
     submit(input: {
       sessionID: string
       mode?: BusySubmitMode
@@ -85,6 +111,7 @@ export async function dispatchPromptSubmit(input: {
   status: SubmitStatus
   request: TuiSubmitRequest
   requestedMode?: BusySubmitMode
+  editingPendingMessage?: EditingPendingMessage
 }) {
   const request = input.request
 
@@ -94,6 +121,36 @@ export async function dispatchPromptSubmit(input: {
       agent: request.agent,
       model: request.model,
       command: request.command,
+    })
+  }
+
+  if (input.editingPendingMessage) {
+    if (request.kind === "command") {
+      return input.client.session.queueUpdate({
+        sessionID: request.sessionID,
+        pendingMessageID: input.editingPendingMessage.pendingMessageID,
+        payload: {
+          kind: "command",
+          command: request.command,
+          arguments: request.arguments,
+          agent: request.agent,
+          model: request.model,
+          variant: request.variant,
+          parts: request.parts,
+        },
+      })
+    }
+
+    return input.client.session.queueUpdate({
+      sessionID: request.sessionID,
+      pendingMessageID: input.editingPendingMessage.pendingMessageID,
+      payload: {
+        kind: "prompt",
+        agent: request.agent,
+        model: request.model,
+        variant: request.variant,
+        parts: request.parts,
+      },
     })
   }
 

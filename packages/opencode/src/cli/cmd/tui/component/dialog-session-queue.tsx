@@ -1,6 +1,7 @@
 import type { PendingMessage } from "@opencode-ai/sdk/v2"
 import { createMemo, onMount } from "solid-js"
 import { useSDK } from "@tui/context/sdk"
+import { usePromptRef } from "@tui/context/prompt"
 import { useSync } from "@tui/context/sync"
 import { useDialog } from "@tui/ui/dialog"
 import { DialogSelect, type DialogSelectOption } from "@tui/ui/dialog-select"
@@ -9,6 +10,7 @@ import { DialogConfirm } from "@tui/ui/dialog-confirm"
 import { Locale } from "@/util/locale"
 import {
   pendingMessageAttachmentCount,
+  pendingMessageToPromptInfo,
   pendingMessagePreview,
   pendingQueueSummary,
   reorderPendingMessageIDs,
@@ -67,6 +69,7 @@ async function expectOk<T>(promise: Promise<{ data?: T; error?: unknown }>) {
 export function DialogSessionQueue(props: { sessionID: string }) {
   const sync = useSync()
   const sdk = useSDK()
+  const promptRef = usePromptRef()
   const dialog = useDialog()
 
   onMount(() => {
@@ -92,6 +95,7 @@ export function DialogSessionQueue(props: { sessionID: string }) {
 
     try {
       await expectOk(sdk.client.session.queueClear({ sessionID: props.sessionID }))
+      promptRef.current?.clearQueuedEdit?.()
       dialog.clear()
     } catch (error) {
       await DialogAlert.show(dialog, "Clear queue failed", queueMutationError(error))
@@ -139,6 +143,7 @@ function DialogSessionQueueItem(props: { sessionID: string; pendingMessageID: st
   const sync = useSync()
   const sdk = useSDK()
   const dialog = useDialog()
+  const promptRef = usePromptRef()
 
   onMount(() => {
     dialog.setSize("large")
@@ -153,6 +158,23 @@ function DialogSessionQueueItem(props: { sessionID: string; pendingMessageID: st
 
   const reopenItem = () => {
     dialog.replace(() => <DialogSessionQueueItem sessionID={props.sessionID} pendingMessageID={props.pendingMessageID} />)
+  }
+
+  const edit = async () => {
+    const current = item()
+    const prompt = promptRef.current
+    const restored = current ? pendingMessageToPromptInfo(current) : undefined
+    if (!current || !prompt?.setQueuedEdit || !restored) {
+      reopenItem()
+      return
+    }
+
+    prompt.setQueuedEdit({
+      pendingMessageID: current.id,
+      mode: current.mode,
+      prompt: restored,
+    })
+    dialog.clear()
   }
 
   const mutate = async (run: () => Promise<void>, errorTitle: string, next: () => void = reopenList) => {
@@ -219,6 +241,9 @@ function DialogSessionQueueItem(props: { sessionID: string; pendingMessageID: st
             pendingMessageID: current.id,
           }),
         )
+        if (promptRef.current?.editing?.pendingMessageID === current.id) {
+          promptRef.current.clearQueuedEdit?.()
+        }
       },
       "Send now failed",
     )
@@ -247,6 +272,9 @@ function DialogSessionQueueItem(props: { sessionID: string; pendingMessageID: st
             pendingMessageID: current.id,
           }),
         )
+        if (promptRef.current?.editing?.pendingMessageID === current.id) {
+          promptRef.current.clearQueuedEdit?.()
+        }
       },
       "Delete queue item failed",
     )
@@ -328,6 +356,19 @@ function DialogSessionQueueItem(props: { sessionID: string; pendingMessageID: st
     }
 
     if (current.status !== "running") {
+      const restored = pendingMessageToPromptInfo(current)
+      if (restored && promptRef.current?.setQueuedEdit) {
+        result.push({
+          title: "Edit item",
+          value: "edit",
+          category: "Actions",
+          description: "Load this pending submission back into the prompt for replacement.",
+          onSelect: () => {
+            void edit()
+          },
+        })
+      }
+
       result.push({
         title: current.status === "blocked_after_interrupt" ? "Resume and send now" : "Send now",
         value: "promote",

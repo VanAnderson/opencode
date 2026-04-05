@@ -9,7 +9,7 @@ import { EmptyBorder, SplitBorder } from "@tui/component/border"
 import { useSDK } from "@tui/context/sdk"
 import { useRoute } from "@tui/context/route"
 import { useSync } from "@tui/context/sync"
-import { MessageID, PartID } from "@/session/schema"
+import { MessageID, PartID, PendingMessageID } from "@/session/schema"
 import { createStore, produce } from "solid-js/store"
 import { useKeybind } from "@tui/context/keybind"
 import { usePromptHistory, type PromptInfo } from "./history"
@@ -37,7 +37,7 @@ import { useTextareaKeybindings } from "../textarea-keybindings"
 import { DialogSkill } from "../dialog-skill"
 import { CONSOLE_MANAGED_ICON, consoleManagedProviderLabel } from "@tui/util/provider-origin"
 import { DialogSessionQueue } from "../dialog-session-queue"
-import { dispatchPromptSubmit, type BusySubmitMode } from "./submit"
+import { dispatchPromptSubmit, type BusySubmitMode, type EditingPendingMessage } from "./submit"
 import { pendingQueueSummary } from "../../util/session-queue"
 
 export type PromptProps = {
@@ -59,7 +59,10 @@ export type PromptProps = {
 export type PromptRef = {
   focused: boolean
   current: PromptInfo
+  editing?: EditingPendingMessage
   set(prompt: PromptInfo): void
+  setQueuedEdit?: (input: EditingPendingMessage & { prompt: PromptInfo }) => void
+  clearQueuedEdit?: () => void
   reset(): void
   blur(): void
   focus(): void
@@ -176,6 +179,7 @@ export function Prompt(props: PromptProps) {
     extmarkToPartIndex: Map<number, number>
     interrupt: number
     placeholder: number
+    editing?: EditingPendingMessage
   }>({
     placeholder: randomIndex(list().length),
     prompt: {
@@ -226,8 +230,7 @@ export function Prompt(props: PromptProps) {
         category: "Prompt",
         hidden: true,
         onSelect: (dialog) => {
-          input.extmarks.clear()
-          input.clear()
+          ref.reset()
           dialog.clear()
         },
       },
@@ -457,6 +460,9 @@ export function Prompt(props: PromptProps) {
     get current() {
       return store.prompt
     },
+    get editing() {
+      return store.editing
+    },
     focus() {
       input.focus()
     },
@@ -466,8 +472,23 @@ export function Prompt(props: PromptProps) {
     set(prompt) {
       input.setText(prompt.input)
       setStore("prompt", prompt)
+      setStore("editing", undefined)
       restoreExtmarksFromParts(prompt.parts)
       input.gotoBufferEnd()
+    },
+    setQueuedEdit(next) {
+      input.setText(next.prompt.input)
+      setStore("prompt", next.prompt)
+      setStore("editing", {
+        pendingMessageID: PendingMessageID.make(next.pendingMessageID),
+        mode: next.mode,
+      })
+      restoreExtmarksFromParts(next.prompt.parts)
+      setStore("mode", "normal")
+      input.gotoBufferEnd()
+    },
+    clearQueuedEdit() {
+      setStore("editing", undefined)
     },
     reset() {
       input.clear()
@@ -477,9 +498,10 @@ export function Prompt(props: PromptProps) {
         parts: [],
       })
       setStore("extmarkToPartIndex", new Map())
+      setStore("editing", undefined)
     },
     submit() {
-      submit()
+      void submit()
     },
   }
 
@@ -602,6 +624,7 @@ export function Prompt(props: PromptProps) {
         input.clear()
         setStore("prompt", { input: "", parts: [] })
         setStore("extmarkToPartIndex", new Map())
+        setStore("editing", undefined)
         dialog.clear()
       },
     },
@@ -618,6 +641,7 @@ export function Prompt(props: PromptProps) {
           restoreExtmarksFromParts(entry.parts)
           input.gotoBufferEnd()
         }
+        setStore("editing", undefined)
         dialog.clear()
       },
     },
@@ -701,6 +725,7 @@ export function Prompt(props: PromptProps) {
     // Capture mode before it gets reset
     const currentMode = store.mode
     const variant = local.model.variant.current()
+    const editing = store.editing
 
     if (store.mode === "shell") {
       await dispatchPromptSubmit({
@@ -737,6 +762,7 @@ export function Prompt(props: PromptProps) {
         client: sdk.client,
         status: status(),
         requestedMode,
+        editingPendingMessage: editing,
         request: {
           kind: "command",
           sessionID,
@@ -759,6 +785,7 @@ export function Prompt(props: PromptProps) {
         client: sdk.client,
         status: status(),
         requestedMode,
+        editingPendingMessage: editing,
         request: {
           kind: "prompt",
           sessionID,
@@ -787,6 +814,7 @@ export function Prompt(props: PromptProps) {
       parts: [],
     })
     setStore("extmarkToPartIndex", new Map())
+    setStore("editing", undefined)
     props.onSubmit?.()
 
     // temporary hack to make sure the message is sent
@@ -1316,6 +1344,11 @@ export function Prompt(props: PromptProps) {
                           {queueSummary().blockedCount} <span style={{ fg: theme.textMuted }}>blocked</span>
                         </>
                       </Show>
+                    </text>
+                  </Show>
+                  <Show when={store.editing}>
+                    <text fg={theme.warning} wrapMode="none">
+                      editing <span style={{ fg: theme.textMuted }}>queued item</span>
                     </text>
                   </Show>
                   <Switch>
