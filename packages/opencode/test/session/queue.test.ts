@@ -172,4 +172,88 @@ describe("SessionQueue", () => {
       },
     })
   })
+
+  test("marks queued items blocked after interrupt without touching excluded or newer work", async () => {
+    await Instance.provide({
+      directory: projectRoot,
+      fn: async () => {
+        const session = await Session.create({})
+
+        try {
+          const first = await SessionQueue.enqueue({
+            sessionID: session.id,
+            mode: "queue",
+            payload: promptPayload("first"),
+            createdAgainstExecutionID: "run_1",
+          })
+          const second = await SessionQueue.enqueue({
+            sessionID: session.id,
+            mode: "steer",
+            payload: promptPayload("second"),
+            createdAgainstExecutionID: "run_1",
+          })
+          await SessionQueue.enqueue({
+            sessionID: session.id,
+            mode: "queue",
+            payload: promptPayload("third"),
+            createdAgainstExecutionID: "run_2",
+          })
+
+          const blocked = await SessionQueue.markBlockedAfterInterrupt({
+            sessionID: session.id,
+            createdAgainstExecutionID: "run_1",
+            excludePendingMessageIDs: [second.id],
+          })
+
+          expect(blocked.map((item) => item.id)).toEqual([first.id])
+
+          const list = await SessionQueue.list(session.id)
+          expect(list.find((item) => item.id === first.id)?.status).toBe("blocked_after_interrupt")
+          expect(list.find((item) => item.id === second.id)?.status).toBe("queued")
+          expect(list.find((item) => item.payload.kind === "prompt" && item.id !== first.id && item.id !== second.id)?.status).toBe(
+            "queued",
+          )
+        } finally {
+          await Session.remove(session.id)
+        }
+      },
+    })
+  })
+
+  test("consumes the queued head and pauses when the head is blocked", async () => {
+    await Instance.provide({
+      directory: projectRoot,
+      fn: async () => {
+        const session = await Session.create({})
+
+        try {
+          const first = await SessionQueue.enqueue({
+            sessionID: session.id,
+            mode: "queue",
+            payload: promptPayload("first"),
+          })
+          const second = await SessionQueue.enqueue({
+            sessionID: session.id,
+            mode: "queue",
+            payload: promptPayload("second"),
+          })
+
+          const consumed = await SessionQueue.consumeHead(session.id)
+          expect(consumed?.id).toBe(first.id)
+          expect((await SessionQueue.list(session.id)).map((item) => [item.id, item.position])).toEqual([[second.id, 0]])
+
+          await SessionQueue.update({
+            sessionID: session.id,
+            pendingMessageID: second.id,
+            status: "blocked_after_interrupt",
+          })
+
+          expect(await SessionQueue.consumeHead(session.id)).toBeUndefined()
+          expect((await SessionQueue.list(session.id)).map((item) => item.id)).toEqual([second.id])
+        } finally {
+          await Session.remove(session.id)
+        }
+      },
+    })
+  })
 })

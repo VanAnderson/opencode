@@ -138,6 +138,13 @@ export namespace SessionQueue {
   })
   export type PromoteInput = z.infer<typeof PromoteInput>
 
+  export const MarkBlockedAfterInterruptInput = z.object({
+    sessionID: SessionID.zod,
+    createdAgainstExecutionID: z.string().optional(),
+    excludePendingMessageIDs: z.array(PendingMessageID.zod).optional().default([]),
+  })
+  export type MarkBlockedAfterInterruptInput = z.infer<typeof MarkBlockedAfterInterruptInput>
+
   export interface Interface {
     readonly list: (sessionID: SessionID) => Effect.Effect<PendingMessage[]>
     readonly get: (input: RemoveInput) => Effect.Effect<PendingMessage>
@@ -147,6 +154,8 @@ export namespace SessionQueue {
     readonly clear: (sessionID: SessionID) => Effect.Effect<void>
     readonly reorder: (input: ReorderInput) => Effect.Effect<PendingMessage[]>
     readonly promote: (input: PromoteInput) => Effect.Effect<PendingMessage>
+    readonly markBlockedAfterInterrupt: (input: MarkBlockedAfterInterruptInput) => Effect.Effect<PendingMessage[]>
+    readonly consumeHead: (sessionID: SessionID) => Effect.Effect<PendingMessage | undefined>
   }
 
   export class Service extends ServiceMap.Service<Service, Interface>()("@opencode/SessionQueue") {}
@@ -394,6 +403,62 @@ export namespace SessionQueue {
         return pending
       })
 
+      const markBlockedAfterInterrupt = Effect.fn("SessionQueue.markBlockedAfterInterrupt")(function* (
+        input: MarkBlockedAfterInterruptInput,
+      ) {
+        const pending = yield* Effect.sync(() =>
+          Database.transaction((db) => {
+            const blockedIDs = new Set<string>()
+            const excluded = new Set(input.excludePendingMessageIDs)
+            const now = Date.now()
+
+            for (const row of listRows(db, input.sessionID)) {
+              if (excluded.has(row.id)) continue
+              if (input.createdAgainstExecutionID && row.created_against_execution_id !== input.createdAgainstExecutionID)
+                continue
+              if (!["queued", "running"].includes(row.status)) continue
+
+              db.update(PendingMessageTable)
+                .set({
+                  status: "blocked_after_interrupt",
+                  time_updated: now,
+                })
+                .where(
+                  and(
+                    eq(PendingMessageTable.session_id, input.sessionID),
+                    eq(PendingMessageTable.id, row.id),
+                  ),
+                )
+                .run()
+              blockedIDs.add(row.id)
+            }
+
+            if (blockedIDs.size === 0) return [] as PendingMessage[]
+            return listRows(db, input.sessionID)
+              .filter((row) => blockedIDs.has(row.id))
+              .map(fromRow)
+          }),
+        )
+        if (pending.length > 0) yield* publishUpdated(input.sessionID)
+        return pending
+      })
+
+      const consumeHead = Effect.fn("SessionQueue.consumeHead")(function* (sessionID: SessionID) {
+        const pending = yield* Effect.sync(() =>
+          Database.transaction((db) => {
+            const head = listRows(db, sessionID)[0]
+            if (!head) return undefined
+            if (head.status !== "queued") return undefined
+
+            db.delete(PendingMessageTable).where(eq(PendingMessageTable.id, head.id)).run()
+            normalizePositions(db, sessionID, Date.now())
+            return fromRow(head)
+          }),
+        )
+        if (pending) yield* publishUpdated(sessionID)
+        return pending
+      })
+
       return Service.of({
         list,
         get,
@@ -403,6 +468,8 @@ export namespace SessionQueue {
         clear,
         reorder,
         promote,
+        markBlockedAfterInterrupt,
+        consumeHead,
       })
     }),
   )
@@ -418,6 +485,10 @@ export namespace SessionQueue {
   export const clear = fn(SessionID.zod, (sessionID) => runPromise((svc) => svc.clear(sessionID)))
   export const reorder = fn(ReorderInput, (input) => runPromise((svc) => svc.reorder(input)))
   export const promote = fn(PromoteInput, (input) => runPromise((svc) => svc.promote(input)))
+  export const markBlockedAfterInterrupt = fn(MarkBlockedAfterInterruptInput, (input) =>
+    runPromise((svc) => svc.markBlockedAfterInterrupt(input)),
+  )
+  export const consumeHead = fn(SessionID.zod, (sessionID) => runPromise((svc) => svc.consumeHead(sessionID)))
 }
 
 export type PendingMessageMode = SessionQueue.PendingMessageMode
