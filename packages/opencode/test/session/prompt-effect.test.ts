@@ -146,7 +146,7 @@ const filetime = Layer.succeed(
 
 const status = SessionStatus.layer.pipe(Layer.provideMerge(Bus.layer))
 const infra = Layer.mergeAll(NodeFileSystem.layer, CrossSpawnSpawner.defaultLayer)
-function makeHttp() {
+function makeHttp(pluginLayer = Plugin.defaultLayer) {
   const deps = Layer.mergeAll(
     Session.defaultLayer,
     Snapshot.defaultLayer,
@@ -154,7 +154,7 @@ function makeHttp() {
     AgentSvc.defaultLayer,
     Command.defaultLayer,
     Permission.defaultLayer,
-    Plugin.defaultLayer,
+    pluginLayer,
     Config.defaultLayer,
     ProviderSvc.defaultLayer,
     filetime,
@@ -188,6 +188,35 @@ function makeHttp() {
 }
 
 const it = testEffect(makeHttp())
+type RecordedPluginHook = {
+  name: string
+  input: unknown
+}
+
+let recordedPluginHooks: RecordedPluginHook[] = []
+
+function resetRecordedPluginHooks() {
+  recordedPluginHooks = []
+}
+
+function recordedHookCount(name: string) {
+  return recordedPluginHooks.filter((hook) => hook.name === name).length
+}
+
+const recordedPluginLayer = Layer.mock(Plugin.Service)({
+  trigger: <Name extends string, Input, Output>(name: Name, input: Input, output: Output) =>
+    Effect.sync(() => {
+      recordedPluginHooks.push({
+        name,
+        input,
+      })
+      return output
+    }),
+  list: () => Effect.succeed([]),
+  init: () => Effect.void,
+})
+
+const pluginIt = testEffect(makeHttp(recordedPluginLayer))
 const unix = process.platform !== "win32" ? it.live : it.live.skip
 
 // Config that registers a custom "test" provider with a "test-model" model
@@ -804,6 +833,77 @@ it.live(
 )
 
 it.live(
+  "queued prompts do not dispatch while the session is still busy",
+  () =>
+    provideTmpdirServer(
+      Effect.fnUntraced(function* ({ llm }) {
+        const prompt = yield* SessionPrompt.Service
+        const queue = yield* SessionQueue.Service
+        const sessions = yield* Session.Service
+        const chat = yield* sessions.create({ title: "Queued while busy" })
+        const firstGate = defer<void>()
+
+        yield* llm.hold("first reply", firstGate.promise)
+        yield* llm.text("second reply")
+        yield* user(chat.id, "hello first")
+
+        const first = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.forkChild)
+        yield* llm.wait(1)
+
+        const queued = yield* queue.enqueue({
+          sessionID: chat.id,
+          mode: "queue",
+          payload: {
+            kind: "prompt",
+            agent: "build",
+            model: ref,
+            variant: "default",
+            parts: [{ type: "text", text: "hello second" }],
+          },
+          source: "test",
+        })
+
+        yield* Effect.sleep("150 millis")
+
+        expect(yield* llm.calls).toBe(1)
+        expect((yield* queue.list(chat.id)).map((item) => [item.id, item.status])).toEqual([[queued.id, "queued"]])
+
+        const before = yield* sessions.messages({ sessionID: chat.id })
+        const beforeUserTexts = before
+          .filter((msg) => msg.info.role === "user")
+          .map((msg) => msg.parts.find((part) => part.type === "text"))
+          .map((part) => (part?.type === "text" ? part.text : undefined))
+        expect(beforeUserTexts).toEqual(["hello first"])
+
+        firstGate.resolve()
+
+        yield* Effect.promise(async () => {
+          const end = Date.now() + 5000
+          while (Date.now() < end) {
+            const pending = await Effect.runPromise(queue.list(chat.id))
+            const msgs = await Effect.runPromise(sessions.messages({ sessionID: chat.id }))
+            const assistants = msgs.filter((msg) => msg.info.role === "assistant")
+            if (
+              pending.length === 0 &&
+              assistants.length === 2 &&
+              assistants.at(-1)?.parts.some((part) => part.type === "text" && part.text === "second reply")
+            ) {
+              return
+            }
+            await new Promise((done) => setTimeout(done, 20))
+          }
+          throw new Error("timed out waiting for queued dispatch after busy run")
+        })
+
+        const exit = yield* Fiber.await(first)
+        expect(Exit.isSuccess(exit)).toBe(true)
+      }),
+      { git: true, config: providerCfg },
+    ),
+  5_000,
+)
+
+it.live(
   "idle redispatch drains multiple queued prompts in FIFO order",
   () =>
     provideTmpdirServer(
@@ -981,6 +1081,96 @@ it.live(
         if (lastAssistant?.info.role === "assistant") {
           expect(lastAssistant.info.error?.name).toBe("APIError")
         }
+      }),
+      { git: true, config: providerCfg },
+    ),
+  10_000,
+)
+
+pluginIt.live(
+  "queued prompts stay dormant while busy and fire plugin hooks exactly once when consumed",
+  () =>
+    provideTmpdirServer(
+      Effect.fnUntraced(function* ({ llm }) {
+        resetRecordedPluginHooks()
+
+        const prompt = yield* SessionPrompt.Service
+        const queue = yield* SessionQueue.Service
+        const sessions = yield* Session.Service
+        const chat = yield* sessions.create({ title: "Queued plugin hooks" })
+        const firstGate = defer<void>()
+        const secondGate = defer<void>()
+
+        yield* llm.hold("first reply", firstGate.promise)
+        yield* llm.hold("second reply", secondGate.promise)
+        yield* user(chat.id, "hello first")
+
+        const first = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.forkChild)
+        yield* llm.wait(1)
+
+        expect(recordedHookCount("chat.message")).toBe(0)
+        expect(recordedHookCount("experimental.chat.messages.transform")).toBe(1)
+        expect(recordedHookCount("chat.params")).toBe(1)
+        expect(recordedHookCount("chat.headers")).toBe(1)
+
+        yield* queue.enqueue({
+          sessionID: chat.id,
+          mode: "queue",
+          payload: {
+            kind: "prompt",
+            agent: "build",
+            model: ref,
+            variant: "default",
+            parts: [{ type: "text", text: "hello second" }],
+          },
+          source: "test",
+        })
+
+        yield* Effect.sleep(50)
+
+        expect(yield* llm.calls).toBe(1)
+        expect((yield* queue.list(chat.id)).map((item) => item.status)).toEqual(["queued"])
+        expect(recordedHookCount("chat.message")).toBe(0)
+        expect(recordedHookCount("experimental.chat.messages.transform")).toBe(1)
+        expect(recordedHookCount("chat.params")).toBe(1)
+        expect(recordedHookCount("chat.headers")).toBe(1)
+
+        firstGate.resolve()
+        yield* llm.wait(2)
+
+        const firstExit = yield* Fiber.await(first)
+        expect(Exit.isSuccess(firstExit)).toBe(true)
+
+        secondGate.resolve()
+
+        yield* Effect.promise(async () => {
+          const end = Date.now() + 5000
+          while (Date.now() < end) {
+            const pending = await Effect.runPromise(queue.list(chat.id))
+            const msgs = await Effect.runPromise(sessions.messages({ sessionID: chat.id }))
+            const assistants = msgs.filter((msg) => msg.info.role === "assistant")
+            if (
+              pending.length === 0 &&
+              assistants.length === 2 &&
+              assistants.at(-1)?.parts.some((part) => part.type === "text" && part.text === "second reply")
+            ) {
+              return
+            }
+            await new Promise((done) => setTimeout(done, 20))
+          }
+          throw new Error("timed out waiting for queued plugin hook dispatch")
+        })
+
+        expect(recordedHookCount("chat.message")).toBe(1)
+        expect(recordedHookCount("experimental.chat.messages.transform")).toBe(2)
+        expect(recordedHookCount("chat.params")).toBe(2)
+        expect(recordedHookCount("chat.headers")).toBe(2)
+
+        const chatMessageHook = recordedPluginHooks.find((hook) => hook.name === "chat.message")
+        expect(chatMessageHook?.input).toMatchObject({
+          sessionID: chat.id,
+          agent: "build",
+        })
       }),
       { git: true, config: providerCfg },
     ),
