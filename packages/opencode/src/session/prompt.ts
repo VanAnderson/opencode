@@ -51,6 +51,7 @@ import { Cause, Effect, Exit, Layer, Option, Scope, ServiceMap } from "effect"
 import { InstanceState } from "@/effect/instance-state"
 import { makeRuntime } from "@/effect/run-service"
 import * as SessionPromptInput from "./prompt-input"
+import { SessionQueue } from "./queue"
 
 // @ts-ignore
 globalThis.AI_SDK_LOG_WARNINGS = false
@@ -86,6 +87,7 @@ export namespace SessionPrompt {
       const bus = yield* Bus.Service
       const status = yield* SessionStatus.Service
       const sessions = yield* Session.Service
+      const queue = yield* SessionQueue.Service
       const agents = yield* Agent.Service
       const provider = yield* Provider.Service
       const processor = yield* SessionProcessor.Service
@@ -116,6 +118,26 @@ export namespace SessionPrompt {
         }),
       )
 
+      const dispatchQueued = Effect.fn("SessionPrompt.dispatchQueued")(function* (sessionID: SessionID) {
+        const pending = yield* queue.consumeHead(sessionID)
+        if (!pending) return
+
+        switch (pending.payload.kind) {
+          case "prompt":
+            yield* prompt({
+              sessionID,
+              ...pending.payload,
+            })
+            return
+          case "command":
+            yield* command({
+              sessionID,
+              ...pending.payload,
+            })
+            return
+        }
+      })
+
       const getRunner = (runners: Map<string, Runner<MessageV2.WithParts>>, sessionID: SessionID) => {
         const existing = runners.get(sessionID)
         if (existing) return existing
@@ -123,6 +145,14 @@ export namespace SessionPrompt {
           onIdle: Effect.gen(function* () {
             runners.delete(sessionID)
             yield* status.set(sessionID, { type: "idle" })
+            yield* dispatchQueued(sessionID).pipe(
+              Effect.catchCause((cause) =>
+                Effect.sync(() =>
+                  log.error("failed to dispatch queued follow-up", { sessionID, error: Cause.squash(cause) }),
+                ),
+              ),
+              Effect.forkIn(scope),
+            )
           }),
           onBusy: status.set(sessionID, { type: "busy" }),
           onInterrupt: lastAssistant(sessionID),
@@ -1734,6 +1764,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         Layer.provide(Instruction.defaultLayer),
         Layer.provide(AppFileSystem.defaultLayer),
         Layer.provide(Plugin.defaultLayer),
+        Layer.provide(SessionQueue.defaultLayer),
         Layer.provide(Session.defaultLayer),
         Layer.provide(Agent.defaultLayer),
         Layer.provide(Bus.layer),

@@ -1,6 +1,6 @@
 import { NodeFileSystem } from "@effect/platform-node"
 import { expect, spyOn } from "bun:test"
-import { Cause, Effect, Exit, Fiber, Layer } from "effect"
+import { Cause, Effect, Exit, Fiber, Layer, Option } from "effect"
 import path from "path"
 import z from "zod"
 import { Agent as AgentSvc } from "../../src/agent/agent"
@@ -25,6 +25,7 @@ import { SessionCompaction } from "../../src/session/compaction"
 import { Instruction } from "../../src/session/instruction"
 import { SessionProcessor } from "../../src/session/processor"
 import { SessionPrompt } from "../../src/session/prompt"
+import { SessionQueue } from "../../src/session/queue"
 import { MessageID, PartID, SessionID } from "../../src/session/schema"
 import { SessionStatus } from "../../src/session/status"
 import { Shell } from "../../src/shell/shell"
@@ -160,6 +161,7 @@ function makeHttp() {
     lsp,
     mcp,
     AppFileSystem.defaultLayer,
+    SessionQueue.defaultLayer,
     status,
   ).pipe(Layer.provideMerge(infra))
   const question = Question.layer.pipe(Layer.provideMerge(deps))
@@ -716,6 +718,88 @@ it.live(
 )
 
 // Queue semantics
+
+it.live(
+  "idle transition dispatches queued prompts without blocking the completed run",
+  () =>
+    provideTmpdirServer(
+      Effect.fnUntraced(function* ({ llm }) {
+        const prompt = yield* SessionPrompt.Service
+        const queue = yield* SessionQueue.Service
+        const sessions = yield* Session.Service
+        const chat = yield* sessions.create({ title: "Queued follow-up" })
+        const firstGate = defer<void>()
+        const secondGate = defer<void>()
+
+        yield* llm.hold("first reply", firstGate.promise)
+        yield* llm.hold("second reply", secondGate.promise)
+        yield* user(chat.id, "hello first")
+
+        const first = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.forkChild)
+        yield* llm.wait(1)
+
+        yield* queue.enqueue({
+          sessionID: chat.id,
+          mode: "queue",
+          payload: {
+            kind: "prompt",
+            agent: "build",
+            model: ref,
+            variant: "default",
+            parts: [{ type: "text", text: "hello second" }],
+          },
+          source: "test",
+        })
+
+        firstGate.resolve()
+        yield* llm.wait(2)
+
+        const firstExit = yield* Fiber.await(first).pipe(Effect.timeoutOption("1 second"))
+        expect(Option.isSome(firstExit)).toBe(true)
+        if (Option.isSome(firstExit)) {
+          expect(Exit.isSuccess(firstExit.value)).toBe(true)
+          if (Exit.isSuccess(firstExit.value)) {
+            expect(firstExit.value.value.parts.some((part) => part.type === "text" && part.text === "first reply")).toBe(
+              true,
+            )
+          }
+        }
+
+        secondGate.resolve()
+
+        yield* Effect.promise(async () => {
+          const end = Date.now() + 5000
+          while (Date.now() < end) {
+            const msgs = await Effect.runPromise(sessions.messages({ sessionID: chat.id }))
+            const assistants = msgs.filter((msg) => msg.info.role === "assistant")
+            if (
+              assistants.length === 2 &&
+              assistants.at(-1)?.parts.some((part) => part.type === "text" && part.text === "second reply")
+            ) {
+              return
+            }
+            await new Promise((done) => setTimeout(done, 20))
+          }
+          throw new Error("timed out waiting for queued follow-up")
+        })
+
+        expect(yield* llm.calls).toBe(2)
+        expect(yield* queue.list(chat.id)).toEqual([])
+
+        const msgs = yield* sessions.messages({ sessionID: chat.id })
+        const users = msgs.filter((msg) => msg.info.role === "user")
+        const assistants = msgs.filter((msg) => msg.info.role === "assistant")
+        expect(users).toHaveLength(2)
+        expect(assistants).toHaveLength(2)
+        expect(users.at(-1)?.parts.some((part) => part.type === "text" && part.text === "hello second")).toBe(true)
+        expect(assistants.at(-1)?.parts.some((part) => part.type === "text" && part.text === "second reply")).toBe(
+          true,
+        )
+      }),
+      { git: true, config: providerCfg },
+    ),
+  5_000,
+)
 
 it.live("concurrent loop callers get same result", () =>
   provideTmpdirInstance(

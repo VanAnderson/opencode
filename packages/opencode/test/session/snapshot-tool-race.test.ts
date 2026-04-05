@@ -43,6 +43,7 @@ import { Todo } from "../../src/session/todo"
 import { SessionCompaction } from "../../src/session/compaction"
 import { Instruction } from "../../src/session/instruction"
 import { SessionProcessor } from "../../src/session/processor"
+import { SessionQueue } from "../../src/session/queue"
 import { SessionStatus } from "../../src/session/status"
 import { Shell } from "../../src/shell/shell"
 import { Snapshot } from "../../src/snapshot"
@@ -124,6 +125,7 @@ function makeHttp() {
     lsp,
     mcp,
     AppFileSystem.defaultLayer,
+    SessionQueue.defaultLayer,
     status,
   ).pipe(Layer.provideMerge(infra))
   const question = Question.layer.pipe(Layer.provideMerge(deps))
