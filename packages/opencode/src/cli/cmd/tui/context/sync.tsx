@@ -7,6 +7,7 @@ import type {
   Config,
   Todo,
   Command,
+  PendingMessage,
   PermissionRequest,
   QuestionRequest,
   LspStatus,
@@ -30,6 +31,7 @@ import { Log } from "@/util/log"
 import type { Path } from "@opencode-ai/sdk"
 import type { Workspace } from "@opencode-ai/sdk/v2"
 import { ConsoleState, emptyConsoleState, type ConsoleState as ConsoleStateType } from "@/config/console-state"
+import { applyQueueUpdated, applySessionHydration } from "./sync-state"
 
 export const { use: useSync, provider: SyncProvider } = createSimpleContext({
   name: "Sync",
@@ -56,6 +58,9 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       }
       session_diff: {
         [sessionID: string]: Snapshot.FileDiff[]
+      }
+      queue: {
+        [sessionID: string]: PendingMessage[]
       }
       todo: {
         [sessionID: string]: Todo[]
@@ -96,6 +101,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       session: [],
       session_status: {},
       session_diff: {},
+      queue: {},
       todo: {},
       message: {},
       part: {},
@@ -199,6 +205,14 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
 
         case "todo.updated":
           setStore("todo", event.properties.sessionID, event.properties.todos)
+          break
+
+        case "session.queue.updated":
+          applyQueueUpdated({
+            setStore,
+            sessionID: event.properties.sessionID,
+            pending: event.properties.pending,
+          })
           break
 
         case "session.diff":
@@ -481,25 +495,22 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         },
         async sync(sessionID: string) {
           if (fullSyncedSessions.has(sessionID)) return
-          const [session, messages, todo, diff] = await Promise.all([
+          const [session, messages, todo, diff, queue] = await Promise.all([
             sdk.client.session.get({ sessionID }, { throwOnError: true }),
             sdk.client.session.messages({ sessionID, limit: 100 }),
             sdk.client.session.todo({ sessionID }),
             sdk.client.session.diff({ sessionID }),
+            sdk.client.session.queue({ sessionID }),
           ])
-          setStore(
-            produce((draft) => {
-              const match = Binary.search(draft.session, sessionID, (s) => s.id)
-              if (match.found) draft.session[match.index] = session.data!
-              if (!match.found) draft.session.splice(match.index, 0, session.data!)
-              draft.todo[sessionID] = todo.data ?? []
-              draft.message[sessionID] = messages.data!.map((x) => x.info)
-              for (const message of messages.data!) {
-                draft.part[message.info.id] = message.parts
-              }
-              draft.session_diff[sessionID] = diff.data ?? []
-            }),
-          )
+          applySessionHydration({
+            setStore,
+            sessionID,
+            session: session.data!,
+            messages: messages.data ?? [],
+            todo: todo.data ?? [],
+            diff: diff.data ?? [],
+            queue: queue.data ?? [],
+          })
           fullSyncedSessions.add(sessionID)
         },
       },
