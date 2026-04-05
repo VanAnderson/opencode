@@ -1690,6 +1690,7 @@ export default function Page() {
       text: pendingMessagePreview(item),
       meta: followupMeta(item),
       status: followupStatus(item),
+      sendLabel: item.status === "blocked_after_interrupt" ? language.t("common.continue") : undefined,
       sendDisabled: item.status === "running",
       editDisabled: item.status === "running",
       deleteDisabled: item.status === "running",

@@ -11,14 +11,21 @@ export function SessionFollowupDock(props: {
     text: string
     meta?: string
     status?: string
+    sendLabel?: string
     sendDisabled?: boolean
     editDisabled?: boolean
     deleteDisabled?: boolean
+    moveUpDisabled?: boolean
+    moveDownDisabled?: boolean
   }[]
   sending?: string
+  clearing?: boolean
   onSend?: (id: string) => void
   onEdit?: (id: string) => void
   onDelete?: (id: string) => void
+  onMoveUp?: (id: string) => void
+  onMoveDown?: (id: string) => void
+  onClear?: () => void
 }) {
   const language = useLanguage()
   const [store, setStore] = createStore({
@@ -58,7 +65,24 @@ export function SessionFollowupDock(props: {
         <Show when={store.collapsed && preview()}>
           <span class="min-w-0 flex-1 truncate text-13-regular text-text-base cursor-default">{preview()}</span>
         </Show>
-        <div class="ml-auto shrink-0">
+        <div class="ml-auto shrink-0 flex items-center gap-1">
+          <Show when={props.onClear}>
+            <Button
+              size="small"
+              variant="ghost"
+              disabled={!!props.sending || props.clearing}
+              onMouseDown={(event) => {
+                event.preventDefault()
+                event.stopPropagation()
+              }}
+              onClick={(event) => {
+                event.stopPropagation()
+                props.onClear?.()
+              }}
+            >
+              {language.t("session.followupDock.clearAll")}
+            </Button>
+          </Show>
           <IconButton
             data-collapsed={store.collapsed ? "true" : "false"}
             icon="chevron-down"
@@ -103,21 +127,41 @@ export function SessionFollowupDock(props: {
                   </Show>
                 </div>
                 <div class="shrink-0 flex items-center gap-1">
+                  <Show when={props.onMoveUp}>
+                    <IconButton
+                      icon="chevron-up"
+                      size="small"
+                      variant="ghost"
+                      disabled={!!props.sending || props.clearing || item.moveUpDisabled}
+                      onClick={() => props.onMoveUp?.(item.id)}
+                      aria-label={language.t("session.followupDock.moveUp")}
+                    />
+                  </Show>
+                  <Show when={props.onMoveDown}>
+                    <IconButton
+                      icon="chevron-down"
+                      size="small"
+                      variant="ghost"
+                      disabled={!!props.sending || props.clearing || item.moveDownDisabled}
+                      onClick={() => props.onMoveDown?.(item.id)}
+                      aria-label={language.t("session.followupDock.moveDown")}
+                    />
+                  </Show>
                   <Button
                     size="small"
                     variant="secondary"
                     class="shrink-0"
-                    disabled={!!props.sending || !props.onSend || item.sendDisabled}
+                    disabled={!!props.sending || props.clearing || !props.onSend || item.sendDisabled}
                     onClick={() => props.onSend?.(item.id)}
                   >
-                    {language.t("session.followupDock.sendNow")}
+                    {item.sendLabel ?? language.t("session.followupDock.sendNow")}
                   </Button>
                   <Show when={props.onEdit}>
                     <Button
                       size="small"
                       variant="ghost"
                       class="shrink-0"
-                      disabled={!!props.sending || item.editDisabled}
+                      disabled={!!props.sending || props.clearing || item.editDisabled}
                       onClick={() => props.onEdit?.(item.id)}
                     >
                       {language.t("session.followupDock.edit")}
@@ -128,7 +172,7 @@ export function SessionFollowupDock(props: {
                       size="small"
                       variant="ghost"
                       class="shrink-0"
-                      disabled={!!props.sending || item.deleteDisabled}
+                      disabled={!!props.sending || props.clearing || item.deleteDisabled}
                       onClick={() => props.onDelete?.(item.id)}
                     >
                       {language.t("common.delete")}

@@ -31,11 +31,15 @@ export function SessionComposerRegion(props: {
       text: string
       meta?: string
       status?: string
+      sendLabel?: string
       sendDisabled?: boolean
       editDisabled?: boolean
       deleteDisabled?: boolean
+      moveUpDisabled?: boolean
+      moveDownDisabled?: boolean
     }[]
     sending?: string
+    clearing?: boolean
     edit?: { id: string; prompt: FollowupDraft["prompt"]; context: FollowupDraft["context"] }
     onQueue?: (input: {
       draft: FollowupDraft
@@ -46,6 +50,9 @@ export function SessionComposerRegion(props: {
     onSend?: (id: string) => void
     onEdit?: (id: string) => void
     onDelete?: (id: string) => void
+    onMoveUp?: (id: string) => void
+    onMoveDown?: (id: string) => void
+    onClear?: () => void
   }
   revert?: {
     items: { id: string; text: string }[]
@@ -240,9 +247,13 @@ export function SessionComposerRegion(props: {
                 <SessionFollowupDock
                   items={props.followup!.items}
                   sending={props.followup!.sending}
+                  clearing={props.followup!.clearing}
                   onSend={props.followup!.onSend}
                   onEdit={props.followup!.onEdit}
                   onDelete={props.followup!.onDelete}
+                  onMoveUp={props.followup!.onMoveUp}
+                  onMoveDown={props.followup!.onMoveDown}
+                  onClear={props.followup!.onClear}
                 />
               </Show>
               <PromptInput
