@@ -3,6 +3,7 @@ import type { PendingMessage } from "@opencode-ai/sdk/v2/client"
 import type { Prompt } from "@/context/prompt"
 import {
   buildPendingMessagePayload,
+  pendingMessageAttachmentCount,
   pendingMessagePreview,
   pendingMessageToEdit,
   reorderPendingMessageIDs,
@@ -75,5 +76,31 @@ describe("session queue helpers", () => {
     expect(reorderPendingMessageIDs(items, "b", "down")).toEqual(["a", "c", "b"])
     expect(reorderPendingMessageIDs(items, "a", "up")).toBeUndefined()
     expect(reorderPendingMessageIDs(items, "c", "down")).toBeUndefined()
+  })
+
+  test("counts only queued attachment parts", () => {
+    expect(
+      pendingMessageAttachmentCount({
+        payload: {
+          kind: "prompt",
+          parts: [
+            { type: "text", text: "hello" },
+            { type: "file", url: "file:///tmp/test.txt", mime: "text/plain" },
+            { type: "file", url: "data:image/png;base64,AAA", mime: "image/png" },
+          ],
+        },
+      } as Pick<PendingMessage, "payload">),
+    ).toBe(1)
+
+    expect(
+      pendingMessageAttachmentCount({
+        payload: {
+          kind: "command",
+          command: "read",
+          arguments: "foo",
+          parts: [{ type: "file", url: "data:image/png;base64,AAA", mime: "image/png" }],
+        },
+      } as Pick<PendingMessage, "payload">),
+    ).toBe(1)
   })
 })
