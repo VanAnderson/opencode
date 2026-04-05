@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import type { PendingMessage } from "@opencode-ai/sdk/v2"
 import {
   pendingMessageAttachmentCount,
+  pendingMessageToPromptInfo,
   pendingMessagePreview,
   pendingQueueSummary,
   reorderPendingMessageIDs,
@@ -96,5 +97,104 @@ describe("tui session queue helpers", () => {
     expect(reorderPendingMessageIDs(pending, "pnd_2", "up")).toEqual(["pnd_2", "pnd_1", "pnd_3"])
     expect(reorderPendingMessageIDs(pending, "pnd_2", "down")).toEqual(["pnd_1", "pnd_3", "pnd_2"])
     expect(reorderPendingMessageIDs(pending, "pnd_1", "up")).toBeUndefined()
+  })
+
+  test("restores queued command payloads into editable prompt info", () => {
+    expect(pendingMessageToPromptInfo(commandPending("pnd_5"))).toEqual({
+      input: "/review --fix [Image 1]",
+      parts: [
+        {
+          type: "file",
+          mime: "image/png",
+          filename: "a.png",
+          url: "data:image/png;base64,abc",
+          source: {
+            type: "file",
+            path: "a.png",
+            text: {
+              start: 14,
+              end: 23,
+              value: "[Image 1]",
+            },
+          },
+        },
+      ],
+    })
+  })
+
+  test("restores queued prompt payloads into editable prompt info", () => {
+    expect(
+      pendingMessageToPromptInfo({
+        ...promptPending("pnd_6"),
+        payload: {
+          kind: "prompt",
+          agent: "build",
+          model: { providerID: "openai", modelID: "gpt-5" },
+          parts: [
+            { type: "text", text: "review @build" },
+            {
+              type: "agent",
+              name: "build",
+              source: {
+                start: 7,
+                end: 13,
+                value: "@build",
+              },
+            },
+            {
+              type: "file",
+              mime: "image/png",
+              filename: "a.png",
+              url: "data:image/png;base64,abc",
+            },
+          ],
+        },
+      } as PendingMessage),
+    ).toEqual({
+      input: "review @build [Image 1]",
+      parts: [
+        {
+          type: "agent",
+          name: "build",
+          source: {
+            start: 7,
+            end: 13,
+            value: "@build",
+          },
+        },
+        {
+          type: "file",
+          mime: "image/png",
+          filename: "a.png",
+          url: "data:image/png;base64,abc",
+          source: {
+            type: "file",
+            path: "a.png",
+            text: {
+              start: 14,
+              end: 23,
+              value: "[Image 1]",
+            },
+          },
+        },
+      ],
+    })
+  })
+
+  test("refuses to restore unsupported queued prompt payloads with extra synthetic text", () => {
+    expect(
+      pendingMessageToPromptInfo({
+        ...promptPending("pnd_7"),
+        payload: {
+          kind: "prompt",
+          agent: "build",
+          model: { providerID: "openai", modelID: "gpt-5" },
+          parts: [
+            { type: "text", text: "main prompt" },
+            { type: "text", text: "synthetic note", synthetic: true },
+          ],
+        },
+      } as PendingMessage),
+    ).toBeUndefined()
   })
 })

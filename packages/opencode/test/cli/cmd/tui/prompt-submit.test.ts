@@ -7,6 +7,7 @@ function createClient() {
       prompt: mock(async (_input: unknown) => undefined),
       command: mock(async (_input: unknown) => undefined),
       shell: mock(async (_input: unknown) => undefined),
+      queueUpdate: mock(async (_input: unknown) => undefined),
       submit: mock(async (_input: unknown) => undefined),
     },
   }
@@ -126,6 +127,7 @@ describe("tui prompt submit", () => {
       },
     })
     expect(client.session.command).toHaveBeenCalledTimes(0)
+    expect(client.session.queueUpdate).toHaveBeenCalledTimes(0)
   })
 
   test("keeps idle prompt submissions on the immediate prompt endpoint", async () => {
@@ -154,6 +156,7 @@ describe("tui prompt submit", () => {
       parts: [{ type: "text", text: "now" }],
     })
     expect(client.session.submit).toHaveBeenCalledTimes(0)
+    expect(client.session.queueUpdate).toHaveBeenCalledTimes(0)
   })
 
   test("keeps shell submissions on the shell endpoint even while busy", async () => {
@@ -180,5 +183,98 @@ describe("tui prompt submit", () => {
       command: "pwd",
     })
     expect(client.session.submit).toHaveBeenCalledTimes(0)
+    expect(client.session.queueUpdate).toHaveBeenCalledTimes(0)
+  })
+
+  test("updates the same queued prompt item when editing instead of creating a new submission", async () => {
+    const client = createClient()
+
+    await dispatchPromptSubmit({
+      client,
+      status: { type: "busy" },
+      requestedMode: "steer",
+      editingPendingMessage: {
+        pendingMessageID: "pending_1",
+        mode: "queue",
+      },
+      request: {
+        kind: "prompt",
+        sessionID: "ses_1",
+        messageID: "msg_1",
+        agent: "build",
+        model: { providerID: "openai", modelID: "gpt-5" },
+        parts: [{ type: "text", text: "edited" }],
+      },
+    })
+
+    expect(client.session.queueUpdate).toHaveBeenCalledTimes(1)
+    expect(client.session.queueUpdate).toHaveBeenCalledWith({
+      sessionID: "ses_1",
+      pendingMessageID: "pending_1",
+      payload: {
+        kind: "prompt",
+        agent: "build",
+        model: { providerID: "openai", modelID: "gpt-5" },
+        variant: undefined,
+        parts: [{ type: "text", text: "edited" }],
+      },
+    })
+    expect(client.session.submit).toHaveBeenCalledTimes(0)
+    expect(client.session.prompt).toHaveBeenCalledTimes(0)
+  })
+
+  test("updates the same queued command item when editing instead of re-steering it", async () => {
+    const client = createClient()
+
+    await dispatchPromptSubmit({
+      client,
+      status: { type: "busy" },
+      requestedMode: "steer",
+      editingPendingMessage: {
+        pendingMessageID: "pending_2",
+        mode: "steer",
+      },
+      request: {
+        kind: "command",
+        sessionID: "ses_1",
+        messageID: "msg_1",
+        command: "review",
+        arguments: "--fix",
+        agent: "build",
+        model: "openai/gpt-5",
+        parts: [
+          {
+            type: "file",
+            mime: "image/png",
+            filename: "a.png",
+            url: "data:image/png;base64,abc",
+          },
+        ],
+      },
+    })
+
+    expect(client.session.queueUpdate).toHaveBeenCalledTimes(1)
+    expect(client.session.queueUpdate).toHaveBeenCalledWith({
+      sessionID: "ses_1",
+      pendingMessageID: "pending_2",
+      payload: {
+        kind: "command",
+        command: "review",
+        arguments: "--fix",
+        agent: "build",
+        model: "openai/gpt-5",
+        variant: undefined,
+        parts: [
+          {
+            type: "file",
+            mime: "image/png",
+            filename: "a.png",
+            url: "data:image/png;base64,abc",
+          },
+        ],
+      },
+    })
+    expect(client.session.submit).toHaveBeenCalledTimes(0)
+    expect(client.session.command).toHaveBeenCalledTimes(0)
   })
 })
