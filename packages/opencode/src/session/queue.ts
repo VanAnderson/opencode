@@ -6,7 +6,7 @@ import { Database, NotFoundError, and, asc, desc, eq } from "../storage/db"
 import { Effect, Layer, ServiceMap } from "effect"
 import z from "zod"
 
-import { SessionPrompt } from "./prompt"
+import * as SessionPromptInput from "./prompt-input"
 import { PendingMessageID, SessionID } from "./schema"
 import { PendingMessageTable } from "./session.sql"
 
@@ -23,7 +23,7 @@ export namespace SessionQueue {
     })
   export type PendingMessageStatus = z.infer<typeof PendingMessageStatus>
 
-  export const PendingMessagePromptPayload = SessionPrompt.PromptInput.omit({
+  export const PendingMessagePromptPayload = SessionPromptInput.PromptInput.omit({
     sessionID: true,
     messageID: true,
     noReply: true,
@@ -36,7 +36,7 @@ export namespace SessionQueue {
     })
   export type PendingMessagePromptPayload = z.infer<typeof PendingMessagePromptPayload>
 
-  export const PendingMessageCommandPayload = SessionPrompt.CommandInput.omit({
+  export const PendingMessageCommandPayload = SessionPromptInput.CommandInput.omit({
     sessionID: true,
     messageID: true,
   })

@@ -50,6 +50,7 @@ import { Process } from "@/util/process"
 import { Cause, Effect, Exit, Layer, Option, Scope, ServiceMap } from "effect"
 import { InstanceState } from "@/effect/instance-state"
 import { makeRuntime } from "@/effect/run-service"
+import * as SessionPromptInput from "./prompt-input"
 
 // @ts-ignore
 globalThis.AI_SDK_LOG_WARNINGS = false
@@ -70,11 +71,11 @@ export namespace SessionPrompt {
   export interface Interface {
     readonly assertNotBusy: (sessionID: SessionID) => Effect.Effect<void, Session.BusyError>
     readonly cancel: (sessionID: SessionID) => Effect.Effect<void>
-    readonly prompt: (input: PromptInput) => Effect.Effect<MessageV2.WithParts>
-    readonly loop: (input: z.infer<typeof LoopInput>) => Effect.Effect<MessageV2.WithParts>
-    readonly shell: (input: ShellInput) => Effect.Effect<MessageV2.WithParts>
-    readonly command: (input: CommandInput) => Effect.Effect<MessageV2.WithParts>
-    readonly resolvePromptParts: (template: string) => Effect.Effect<PromptInput["parts"]>
+    readonly prompt: (input: SessionPromptInput.PromptInput) => Effect.Effect<MessageV2.WithParts>
+    readonly loop: (input: SessionPromptInput.LoopInput) => Effect.Effect<MessageV2.WithParts>
+    readonly shell: (input: SessionPromptInput.ShellInput) => Effect.Effect<MessageV2.WithParts>
+    readonly command: (input: SessionPromptInput.CommandInput) => Effect.Effect<MessageV2.WithParts>
+    readonly resolvePromptParts: (template: string) => Effect.Effect<SessionPromptInput.PromptInput["parts"]>
   }
 
   export class Service extends ServiceMap.Service<Service, Interface>()("@opencode/SessionPrompt") {}
@@ -154,7 +155,7 @@ export namespace SessionPrompt {
 
       const resolvePromptParts = Effect.fn("SessionPrompt.resolvePromptParts")(function* (template: string) {
         const ctx = yield* InstanceState.context
-        const parts: PromptInput["parts"] = [{ type: "text", text: template }]
+        const parts: SessionPromptInput.PromptInput["parts"] = [{ type: "text", text: template }]
         const files = ConfigMarkdown.files(template)
         const seen = new Set<string>()
         yield* Effect.forEach(
@@ -740,7 +741,10 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         } satisfies MessageV2.TextPart)
       })
 
-      const shellImpl = Effect.fn("SessionPrompt.shellImpl")(function* (input: ShellInput, signal: AbortSignal) {
+      const shellImpl = Effect.fn("SessionPrompt.shellImpl")(function* (
+        input: SessionPromptInput.ShellInput,
+        signal: AbortSignal,
+      ) {
         const ctx = yield* InstanceState.context
         const session = yield* sessions.get(input.sessionID)
         if (session.revert) {
@@ -946,7 +950,9 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         return yield* provider.defaultModel()
       })
 
-      const createUserMessage = Effect.fn("SessionPrompt.createUserMessage")(function* (input: PromptInput) {
+      const createUserMessage = Effect.fn("SessionPrompt.createUserMessage")(function* (
+        input: SessionPromptInput.PromptInput,
+      ) {
         const agentName = input.agent || (yield* agents.defaultAgent())
         const ag = yield* agents.get(agentName)
         if (!ag) {
@@ -990,7 +996,9 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           id: part.id ? PartID.make(part.id) : PartID.ascending(),
         })
 
-        const resolvePart: (part: PromptInput["parts"][number]) => Effect.Effect<Draft<MessageV2.Part>[]> = Effect.fn(
+        const resolvePart: (
+          part: SessionPromptInput.PromptInput["parts"][number],
+        ) => Effect.Effect<Draft<MessageV2.Part>[]> = Effect.fn(
           "SessionPrompt.resolveUserPart",
         )(function* (part) {
           if (part.type === "file") {
@@ -1302,8 +1310,9 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         return { info, parts }
       }, Effect.scoped)
 
-      const prompt: (input: PromptInput) => Effect.Effect<MessageV2.WithParts> = Effect.fn("SessionPrompt.prompt")(
-        function* (input: PromptInput) {
+      const prompt: (input: SessionPromptInput.PromptInput) => Effect.Effect<MessageV2.WithParts> = Effect.fn(
+        "SessionPrompt.prompt",
+      )(function* (input: SessionPromptInput.PromptInput) {
           const session = yield* sessions.get(input.sessionID)
           yield* Effect.promise(() => SessionRevert.cleanup(session))
           const message = yield* createUserMessage(input)
@@ -1320,8 +1329,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
 
           if (input.noReply === true) return message
           return yield* loop({ sessionID: input.sessionID })
-        },
-      )
+        })
 
       const lastAssistant = (sessionID: SessionID) =>
         Effect.promise(async () => {
@@ -1565,23 +1573,23 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         },
       )
 
-      const loop: (input: z.infer<typeof LoopInput>) => Effect.Effect<MessageV2.WithParts> = Effect.fn(
+      const loop: (input: SessionPromptInput.LoopInput) => Effect.Effect<MessageV2.WithParts> = Effect.fn(
         "SessionPrompt.loop",
-      )(function* (input: z.infer<typeof LoopInput>) {
+      )(function* (input: SessionPromptInput.LoopInput) {
         const s = yield* InstanceState.get(state)
         const runner = getRunner(s.runners, input.sessionID)
         return yield* runner.ensureRunning(runLoop(input.sessionID))
       })
 
-      const shell: (input: ShellInput) => Effect.Effect<MessageV2.WithParts> = Effect.fn("SessionPrompt.shell")(
-        function* (input: ShellInput) {
-          const s = yield* InstanceState.get(state)
-          const runner = getRunner(s.runners, input.sessionID)
-          return yield* runner.startShell((signal) => shellImpl(input, signal))
-        },
-      )
+      const shell: (input: SessionPromptInput.ShellInput) => Effect.Effect<MessageV2.WithParts> = Effect.fn(
+        "SessionPrompt.shell",
+      )(function* (input: SessionPromptInput.ShellInput) {
+        const s = yield* InstanceState.get(state)
+        const runner = getRunner(s.runners, input.sessionID)
+        return yield* runner.startShell((signal) => shellImpl(input, signal))
+      })
 
-      const command = Effect.fn("SessionPrompt.command")(function* (input: CommandInput) {
+      const command = Effect.fn("SessionPrompt.command")(function* (input: SessionPromptInput.CommandInput) {
         log.info("command", input)
         const cmd = yield* commands.get(input.command)
         if (!cmd) {
@@ -1739,75 +1747,11 @@ NOTE: At any point in time through this workflow you should feel free to ask the
     return runPromise((svc) => svc.assertNotBusy(SessionID.zod.parse(sessionID)))
   }
 
-  export const PromptInput = z.object({
-    sessionID: SessionID.zod,
-    messageID: MessageID.zod.optional(),
-    model: z
-      .object({
-        providerID: ProviderID.zod,
-        modelID: ModelID.zod,
-      })
-      .optional(),
-    agent: z.string().optional(),
-    noReply: z.boolean().optional(),
-    tools: z
-      .record(z.string(), z.boolean())
-      .optional()
-      .describe(
-        "@deprecated tools and permissions have been merged, you can set permissions on the session itself now",
-      ),
-    format: MessageV2.Format.optional(),
-    system: z.string().optional(),
-    variant: z.string().optional(),
-    parts: z.array(
-      z.discriminatedUnion("type", [
-        MessageV2.TextPart.omit({
-          messageID: true,
-          sessionID: true,
-        })
-          .partial({
-            id: true,
-          })
-          .meta({
-            ref: "TextPartInput",
-          }),
-        MessageV2.FilePart.omit({
-          messageID: true,
-          sessionID: true,
-        })
-          .partial({
-            id: true,
-          })
-          .meta({
-            ref: "FilePartInput",
-          }),
-        MessageV2.AgentPart.omit({
-          messageID: true,
-          sessionID: true,
-        })
-          .partial({
-            id: true,
-          })
-          .meta({
-            ref: "AgentPartInput",
-          }),
-        MessageV2.SubtaskPart.omit({
-          messageID: true,
-          sessionID: true,
-        })
-          .partial({
-            id: true,
-          })
-          .meta({
-            ref: "SubtaskPartInput",
-          }),
-      ]),
-    ),
-  })
-  export type PromptInput = z.infer<typeof PromptInput>
+  export const PromptInput = SessionPromptInput.PromptInput
+  export type PromptInput = SessionPromptInput.PromptInput
 
   export async function prompt(input: PromptInput) {
-    return runPromise((svc) => svc.prompt(PromptInput.parse(input)))
+    return runPromise((svc) => svc.prompt(SessionPromptInput.PromptInput.parse(input)))
   }
 
   export async function resolvePromptParts(template: string) {
@@ -1818,57 +1762,25 @@ NOTE: At any point in time through this workflow you should feel free to ask the
     return runPromise((svc) => svc.cancel(SessionID.zod.parse(sessionID)))
   }
 
-  export const LoopInput = z.object({
-    sessionID: SessionID.zod,
-  })
+  export const LoopInput = SessionPromptInput.LoopInput
+  export type LoopInput = SessionPromptInput.LoopInput
 
-  export async function loop(input: z.infer<typeof LoopInput>) {
-    return runPromise((svc) => svc.loop(LoopInput.parse(input)))
+  export async function loop(input: LoopInput) {
+    return runPromise((svc) => svc.loop(SessionPromptInput.LoopInput.parse(input)))
   }
 
-  export const ShellInput = z.object({
-    sessionID: SessionID.zod,
-    messageID: MessageID.zod.optional(),
-    agent: z.string(),
-    model: z
-      .object({
-        providerID: ProviderID.zod,
-        modelID: ModelID.zod,
-      })
-      .optional(),
-    command: z.string(),
-  })
-  export type ShellInput = z.infer<typeof ShellInput>
+  export const ShellInput = SessionPromptInput.ShellInput
+  export type ShellInput = SessionPromptInput.ShellInput
 
   export async function shell(input: ShellInput) {
-    return runPromise((svc) => svc.shell(ShellInput.parse(input)))
+    return runPromise((svc) => svc.shell(SessionPromptInput.ShellInput.parse(input)))
   }
 
-  export const CommandInput = z.object({
-    messageID: MessageID.zod.optional(),
-    sessionID: SessionID.zod,
-    agent: z.string().optional(),
-    model: z.string().optional(),
-    arguments: z.string(),
-    command: z.string(),
-    variant: z.string().optional(),
-    parts: z
-      .array(
-        z.discriminatedUnion("type", [
-          MessageV2.FilePart.omit({
-            messageID: true,
-            sessionID: true,
-          }).partial({
-            id: true,
-          }),
-        ]),
-      )
-      .optional(),
-  })
-  export type CommandInput = z.infer<typeof CommandInput>
+  export const CommandInput = SessionPromptInput.CommandInput
+  export type CommandInput = SessionPromptInput.CommandInput
 
   export async function command(input: CommandInput) {
-    return runPromise((svc) => svc.command(CommandInput.parse(input)))
+    return runPromise((svc) => svc.command(SessionPromptInput.CommandInput.parse(input)))
   }
 
   /** @internal Exported for testing */
