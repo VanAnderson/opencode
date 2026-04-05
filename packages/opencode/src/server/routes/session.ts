@@ -275,7 +275,8 @@ export const SessionRoutes = lazy(() =>
                   await SessionQueue.markBlockedAfterInterrupt({
                     sessionID,
                     createdAgainstExecutionID: executionID,
-                    excludePendingMessageIDs: [pending.id],
+                    preserveLatestSteer: true,
+                    excludePendingMessageIDs: [],
                   })
                 }
                 await SessionPrompt.runQueuedIfIdle(sessionID)

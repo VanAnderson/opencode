@@ -143,6 +143,7 @@ export namespace SessionQueue {
   export const MarkBlockedAfterInterruptInput = z.object({
     sessionID: SessionID.zod,
     createdAgainstExecutionID: z.string().optional(),
+    preserveLatestSteer: z.boolean().optional().default(false),
     excludePendingMessageIDs: z.array(PendingMessageID.zod).optional().default([]),
   })
   export type MarkBlockedAfterInterruptInput = z.infer<typeof MarkBlockedAfterInterruptInput>
@@ -429,10 +430,22 @@ export namespace SessionQueue {
           Database.transaction((db) => {
             const blockedIDs = new Set<string>()
             const excluded = new Set(input.excludePendingMessageIDs)
+            const rows = listRows(db, input.sessionID)
+            const preservedSteerID =
+              input.preserveLatestSteer && input.createdAgainstExecutionID
+                ? rows.find(
+                    (row) =>
+                      !excluded.has(row.id) &&
+                      row.mode === "steer" &&
+                      row.supersedes_execution_id === input.createdAgainstExecutionID &&
+                      ["queued", "running"].includes(row.status),
+                  )?.id
+                : undefined
             const now = Date.now()
 
-            for (const row of listRows(db, input.sessionID)) {
+            for (const row of rows) {
               if (excluded.has(row.id)) continue
+              if (row.id === preservedSteerID) continue
               if (input.createdAgainstExecutionID && row.created_against_execution_id !== input.createdAgainstExecutionID)
                 continue
               if (!["queued", "running"].includes(row.status)) continue
