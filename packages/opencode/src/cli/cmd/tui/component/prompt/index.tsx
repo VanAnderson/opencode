@@ -36,7 +36,9 @@ import { useKV } from "../../context/kv"
 import { useTextareaKeybindings } from "../textarea-keybindings"
 import { DialogSkill } from "../dialog-skill"
 import { CONSOLE_MANAGED_ICON, consoleManagedProviderLabel } from "@tui/util/provider-origin"
+import { DialogSessionQueue } from "../dialog-session-queue"
 import { dispatchPromptSubmit, type BusySubmitMode } from "./submit"
+import { pendingQueueSummary } from "../../util/session-queue"
 
 export type PromptProps = {
   sessionID?: string
@@ -98,6 +100,7 @@ export function Prompt(props: PromptProps) {
   const [auto, setAuto] = createSignal<AutocompleteRef>()
   const activeOrgName = createMemo(() => sync.data.console_state.activeOrgName)
   const canSwitchOrgs = createMemo(() => sync.data.console_state.switchableOrgCount > 1)
+  const queueSummary = createMemo(() => pendingQueueSummary(sync.data.queue[props.sessionID ?? ""] ?? []))
   const currentProviderLabel = createMemo(() => {
     const current = local.model.current()
     const provider = local.model.parsed().provider
@@ -309,6 +312,16 @@ export function Prompt(props: PromptProps) {
             setStore("interrupt", 0)
           }
           dialog.clear()
+        },
+      },
+      {
+        title: "Open session queue",
+        value: "session.queue",
+        category: "Session",
+        enabled: !!props.sessionID && queueSummary().visibleCount > 0,
+        onSelect: (dialog) => {
+          if (!props.sessionID) return
+          dialog.replace(() => <DialogSessionQueue sessionID={props.sessionID!} />)
         },
       },
       {
@@ -1286,6 +1299,25 @@ export function Prompt(props: PromptProps) {
             <box gap={2} flexDirection="row">
               <Switch>
                 <Match when={store.mode === "normal"}>
+                  <Show when={queueSummary().visibleCount > 0}>
+                    <text
+                      fg={queueSummary().blockedCount > 0 ? theme.warning : theme.text}
+                      wrapMode="none"
+                      onMouseUp={() => {
+                        if (queueSummary().visibleCount === 0) return
+                        command.trigger("session.queue")
+                      }}
+                    >
+                      {queueSummary().visibleCount} <span style={{ fg: theme.textMuted }}>queued</span>
+                      <Show when={queueSummary().blockedCount > 0}>
+                        <>
+                          {" "}
+                          <span style={{ fg: theme.textMuted }}>·</span>{" "}
+                          {queueSummary().blockedCount} <span style={{ fg: theme.textMuted }}>blocked</span>
+                        </>
+                      </Show>
+                    </text>
+                  </Show>
                   <Switch>
                     <Match when={usage()}>
                       {(item) => (
