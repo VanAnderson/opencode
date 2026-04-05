@@ -1320,6 +1320,77 @@ it.live(
   10_000,
 )
 
+it.live(
+  "queued prompt dispatch still executes downstream tool calls",
+  () =>
+    provideTmpdirServer(
+      Effect.fnUntraced(function* ({ llm }) {
+        const prompt = yield* SessionPrompt.Service
+        const queue = yield* SessionQueue.Service
+        const sessions = yield* Session.Service
+        const chat = yield* sessions.create({
+          title: "Queued tool path",
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+        })
+        const firstGate = defer<void>()
+
+        yield* llm.hold("first reply", firstGate.promise)
+        yield* llm.tool("bash", { command: "printf queued-tool", description: "Print queued tool" })
+        yield* llm.text("second reply")
+        yield* user(chat.id, "hello first")
+
+        const first = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.forkChild)
+        yield* llm.wait(1)
+
+        yield* queue.enqueue({
+          sessionID: chat.id,
+          mode: "queue",
+          payload: {
+            kind: "prompt",
+            agent: "build",
+            model: ref,
+            variant: "default",
+            parts: [{ type: "text", text: "hello second" }],
+          },
+          source: "test",
+        })
+
+        firstGate.resolve()
+        yield* Fiber.await(first)
+
+        const queuedResult = yield* Effect.promise(async () => {
+          const end = Date.now() + 5000
+          while (Date.now() < end) {
+            const pending = await Effect.runPromise(queue.list(chat.id))
+            const msgs = await Effect.runPromise(sessions.messages({ sessionID: chat.id }))
+            const finalAssistant = msgs.findLast((msg): msg is MessageV2.WithParts & { info: MessageV2.Assistant } => {
+              if (msg.info.role !== "assistant") return false
+              return msg.parts.some((part) => part.type === "text" && part.text === "second reply")
+            })
+            const toolAssistant = msgs.find((msg): msg is MessageV2.WithParts & { info: MessageV2.Assistant } => {
+              if (msg.info.role !== "assistant") return false
+              return msg.parts.some((part) => part.type === "tool" && part.state.status === "completed")
+            })
+            if (pending.length === 0 && finalAssistant && toolAssistant) {
+              return { finalAssistant, toolAssistant }
+            }
+            await new Promise((done) => setTimeout(done, 20))
+          }
+          throw new Error("timed out waiting for queued tool execution")
+        })
+
+        expect(yield* llm.calls).toBe(3)
+        expect(queuedResult.finalAssistant.parts.some((part) => part.type === "text" && part.text === "second reply")).toBe(true)
+        const tool = completedTool(queuedResult.toolAssistant.parts)
+        expect(tool?.tool).toBe("bash")
+        expect(tool?.state.input).toMatchObject({ command: "printf queued-tool" })
+        expect(tool?.state.output).toContain("queued-tool")
+      }),
+      { git: true, config: providerCfg },
+    ),
+  10_000,
+)
+
 it.live("concurrent loop callers get same result", () =>
   provideTmpdirInstance(
     (dir) =>
