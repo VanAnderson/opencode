@@ -3,6 +3,7 @@ import { Instance } from "../../src/project/instance"
 import { Server } from "../../src/server/server"
 import { Session } from "../../src/session"
 import { MessageV2 } from "../../src/session/message-v2"
+import { SessionPrompt } from "../../src/session/prompt"
 import { MessageID, PartID, type SessionID } from "../../src/session/schema"
 import { Log } from "../../src/util/log"
 import { tmpdir } from "../fixture/fixture"
@@ -137,6 +138,57 @@ describe("session messages endpoint", () => {
           expect(res.status).toBe(200)
           const body = (await res.json()) as MessageV2.WithParts[]
           expect(body).toHaveLength(510)
+
+          await Session.remove(session.id)
+        },
+      }),
+    )
+  })
+
+  test("returns stored submission provenance for executed user messages", async () => {
+    await using tmp = await tmpdir({
+      git: true,
+      config: {
+        agent: {
+          build: {
+            model: "openai/gpt-5.2",
+          },
+        },
+      },
+    })
+    await withoutWatcher(() =>
+      Instance.provide({
+        directory: tmp.path,
+        fn: async () => {
+          const session = await Session.create({})
+          const app = Server.Default()
+
+          const created = await SessionPrompt.prompt({
+            sessionID: session.id,
+            agent: "build",
+            noReply: true,
+            parts: [{ type: "text", text: "hello provenance" }],
+          })
+
+          expect(created.info.role).toBe("user")
+          if (created.info.role === "user") {
+            expect(created.info.submission).toMatchObject({
+              mode: "immediate",
+            })
+            expect(typeof created.info.submission?.dispatchedAt).toBe("number")
+          }
+
+          const res = await app.request(`/session/${session.id}/message`)
+          expect(res.status).toBe(200)
+          const body = (await res.json()) as MessageV2.WithParts[]
+          const user = body.find((item): item is MessageV2.WithParts & { info: MessageV2.User } => item.info.role === "user")
+          expect(user?.info.role).toBe("user")
+          if (user?.info.role === "user") {
+            expect(user.info.submission).toMatchObject({
+              mode: "immediate",
+            })
+            expect(typeof user.info.submission?.dispatchedAt).toBe("number")
+          }
 
           await Session.remove(session.id)
         },
