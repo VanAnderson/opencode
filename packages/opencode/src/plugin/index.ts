@@ -5,7 +5,6 @@ import { Log } from "../util/log"
 import { createOpencodeClient } from "@opencode-ai/sdk"
 import { Flag } from "../flag/flag"
 import { CodexAuthPlugin } from "./codex"
-import { Session } from "../session"
 import { NamedError } from "@opencode-ai/util/error"
 import { CopilotAuthPlugin } from "./github-copilot/copilot"
 import { gitlabAuthPlugin as GitlabAuthPlugin } from "opencode-gitlab-auth"
@@ -74,8 +73,15 @@ export namespace Plugin {
     return result
   }
 
+  function publishSessionError(bus: Bus.Interface, message: string) {
+    return Effect.gen(function* () {
+      const { Session } = yield* Effect.promise(() => import("@/session"))
+      yield* bus.publish(Session.Event.Error, { error: new NamedError.Unknown({ message }).toObject() })
+    })
+  }
+
   function publishPluginError(bus: Bus.Interface, message: string) {
-    Effect.runFork(bus.publish(Session.Event.Error, { error: new NamedError.Unknown({ message }).toObject() }))
+    Effect.runFork(publishSessionError(bus, message))
   }
 
   async function applyPlugin(load: PluginLoader.Loaded, input: PluginInput, hooks: Hooks[]) {
@@ -196,13 +202,7 @@ export namespace Plugin {
                 return message
               },
             }).pipe(
-              Effect.catch((message) =>
-                bus.publish(Session.Event.Error, {
-                  error: new NamedError.Unknown({
-                    message: `Failed to load plugin ${load.spec}: ${message}`,
-                  }).toObject(),
-                }),
-              ),
+              Effect.catch((message) => publishSessionError(bus, `Failed to load plugin ${load.spec}: ${message}`)),
             )
           }
 
