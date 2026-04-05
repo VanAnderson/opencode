@@ -4,9 +4,15 @@ import type { MessageV2 } from "./message-v2"
 import type { Snapshot } from "../snapshot"
 import type { Permission } from "../permission"
 import type { ProjectID } from "../project/schema"
-import type { SessionID, MessageID, PartID } from "./schema"
+import type { SessionID, MessageID, PartID, PendingMessageID } from "./schema"
 import type { WorkspaceID } from "../control-plane/schema"
 import { Timestamps } from "../storage/schema.sql"
+import type {
+  PendingMessageError,
+  PendingMessageMode,
+  PendingMessagePayload,
+  PendingMessageStatus,
+} from "./queue"
 
 type PartData = Omit<MessageV2.Part, "id" | "sessionID" | "messageID">
 type InfoData = Omit<MessageV2.Info, "id" | "sessionID">
@@ -91,6 +97,30 @@ export const TodoTable = sqliteTable(
   (table) => [
     primaryKey({ columns: [table.session_id, table.position] }),
     index("todo_session_idx").on(table.session_id),
+  ],
+)
+
+export const PendingMessageTable = sqliteTable(
+  "pending_message",
+  {
+    id: text().$type<PendingMessageID>().primaryKey(),
+    session_id: text()
+      .$type<SessionID>()
+      .notNull()
+      .references(() => SessionTable.id, { onDelete: "cascade" }),
+    position: integer().notNull(),
+    mode: text().notNull().$type<PendingMessageMode>(),
+    status: text().notNull().$type<PendingMessageStatus>(),
+    payload: text({ mode: "json" }).notNull().$type<PendingMessagePayload>(),
+    source: text(),
+    created_against_execution_id: text(),
+    supersedes_execution_id: text(),
+    error: text({ mode: "json" }).$type<PendingMessageError>(),
+    ...Timestamps,
+  },
+  (table) => [
+    index("pending_message_session_position_idx").on(table.session_id, table.position),
+    index("pending_message_session_status_idx").on(table.session_id, table.status),
   ],
 )
 

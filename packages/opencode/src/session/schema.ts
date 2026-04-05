@@ -26,6 +26,17 @@ export const MessageID = Schema.String.pipe(
 
 export type MessageID = Schema.Schema.Type<typeof MessageID>
 
+export const PendingMessageID = Schema.String.pipe(
+  Schema.brand("PendingMessageID"),
+  withStatics((s) => ({
+    make: (id: string) => s.makeUnsafe(id),
+    ascending: (id?: string) => s.makeUnsafe(Identifier.ascending("pending", id)),
+    zod: Identifier.schema("pending").pipe(z.custom<Schema.Schema.Type<typeof s>>()),
+  })),
+)
+
+export type PendingMessageID = Schema.Schema.Type<typeof PendingMessageID>
+
 export const PartID = Schema.String.pipe(
   Schema.brand("PartID"),
   withStatics((s) => ({

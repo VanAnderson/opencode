@@ -6,6 +6,7 @@ export namespace Identifier {
     event: "evt",
     session: "ses",
     message: "msg",
+    pending: "pnd",
     permission: "per",
     question: "que",
     user: "usr",
