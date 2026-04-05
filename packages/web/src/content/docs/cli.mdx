@@ -76,6 +76,8 @@ opencode web --port 4096 --hostname 0.0.0.0
 opencode attach http://10.20.30.40:4096
 ```
 
+When you attach to a backend started by `opencode web`, the TUI and browser app share the same session state, including queued messages, steer interruptions, and blocked pending items.
+
 #### Flags
 
 | Flag        | Short | Description                       |
@@ -457,6 +459,8 @@ opencode web
 ```
 
 This starts an HTTP server and opens a web browser to access OpenCode through a web interface. Set `OPENCODE_SERVER_PASSWORD` to enable HTTP basic auth (username defaults to `opencode`).
+
+The interactive browser UI served by this command is the main OpenCode app. If you later use `opencode attach` against the same backend, the TUI joins the same live sessions and queue state instead of creating a separate local queue.
 
 #### Flags
 
