@@ -3,6 +3,7 @@ import path from "path"
 
 import { Bus } from "../../src/bus"
 import { Instance } from "../../src/project/instance"
+import { ModelID, ProviderID } from "../../src/provider/schema"
 import { Session } from "../../src/session"
 import { SessionQueue } from "../../src/session/queue"
 import { Log } from "../../src/util/log"
@@ -15,8 +16,8 @@ function promptPayload(text: string) {
     kind: "prompt" as const,
     agent: "default",
     model: {
-      providerID: "openai" as const,
-      modelID: "gpt-4.1" as const,
+      providerID: ProviderID.make("openai"),
+      modelID: ModelID.make("gpt-4.1"),
     },
     variant: "default",
     parts: [

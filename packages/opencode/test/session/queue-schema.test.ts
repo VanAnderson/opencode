@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
 
+import { ModelID, ProviderID } from "../../src/provider/schema"
 import { PendingMessageID, SessionID } from "../../src/session/schema"
 import { SessionQueue } from "../../src/session/queue"
 
@@ -9,8 +10,8 @@ describe("SessionQueue schema", () => {
       kind: "prompt",
       agent: "default",
       model: {
-        providerID: "openai",
-        modelID: "gpt-4.1",
+        providerID: ProviderID.make("openai"),
+        modelID: ModelID.make("gpt-4.1"),
       },
       variant: "default",
       parts: [
@@ -22,7 +23,7 @@ describe("SessionQueue schema", () => {
     })
 
     expect(payload.kind).toBe("prompt")
-    expect(payload.parts[0]?.type).toBe("text")
+    if (payload.kind === "prompt") expect(payload.parts[0]?.type).toBe("text")
   })
 
   test("parses command payloads", () => {
@@ -58,8 +59,8 @@ describe("SessionQueue schema", () => {
         kind: "prompt",
         agent: "default",
         model: {
-          providerID: "openai",
-          modelID: "gpt-4.1",
+          providerID: ProviderID.make("openai"),
+          modelID: ModelID.make("gpt-4.1"),
         },
         parts: [
           {

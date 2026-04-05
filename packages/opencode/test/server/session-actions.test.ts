@@ -40,8 +40,8 @@ function promptPayload(text: string) {
     kind: "prompt" as const,
     agent: "default",
     model: {
-      providerID: "openai" as const,
-      modelID: "gpt-4.1" as const,
+      providerID: ProviderID.make("openai"),
+      modelID: ModelID.make("gpt-4.1"),
     },
     variant: "default",
     parts: [
