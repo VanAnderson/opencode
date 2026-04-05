@@ -263,15 +263,20 @@ export const SessionRoutes = lazy(() =>
           })
         }
 
+        const submission = {
+          mode: "immediate" as const,
+          source: body.source,
+        }
+
         if (body.payload.kind === "prompt") {
-          const message = await SessionPrompt.prompt({ ...body.payload, sessionID })
+          const message = await SessionPrompt.prompt({ ...body.payload, sessionID, submission })
           return c.json({
             kind: "immediate" as const,
             message,
           })
         }
 
-        const message = await SessionPrompt.command({ ...body.payload, sessionID })
+        const message = await SessionPrompt.command({ ...body.payload, sessionID, submission })
         return c.json({
           kind: "immediate" as const,
           message,

@@ -64,6 +64,7 @@ export const PromptInput = z.object({
   format: MessageV2.Format.optional(),
   system: z.string().optional(),
   variant: z.string().optional(),
+  submission: MessageV2.Submission.optional(),
   parts: z.array(PromptPartInput),
 })
 export type PromptInput = z.infer<typeof PromptInput>
@@ -104,6 +105,7 @@ export const CommandInput = z.object({
   arguments: z.string(),
   command: z.string(),
   variant: z.string().optional(),
+  submission: MessageV2.Submission.optional(),
   parts: z.array(CommandPartInput).optional(),
 })
 export type CommandInput = z.infer<typeof CommandInput>

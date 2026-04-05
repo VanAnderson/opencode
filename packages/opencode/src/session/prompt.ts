@@ -133,6 +133,14 @@ export namespace SessionPrompt {
         }
       }
 
+      const queueSubmission = (pending: SessionQueue.PendingMessage): MessageV2.Submission => ({
+        mode: pending.mode,
+        source: pending.source,
+        queuedAt: pending.time.created,
+        createdFromPendingMessageID: pending.id,
+        supersedesExecutionID: pending.supersedesExecutionID,
+      })
+
       const dispatchQueued = Effect.fn("SessionPrompt.dispatchQueued")(function* (sessionID: SessionID) {
         const s = yield* InstanceState.get(state)
         return yield* Effect.acquireUseRelease(
@@ -154,10 +162,12 @@ export namespace SessionPrompt {
                         ? prompt({
                             sessionID,
                             ...pending.payload,
+                            submission: queueSubmission(pending),
                           })
                         : command({
                             sessionID,
                             ...pending.payload,
+                            submission: queueSubmission(pending),
                           }),
                     )
 
@@ -1059,18 +1069,21 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                 .pipe(Effect.catch(() => Effect.succeed(undefined)))
             : undefined
         const variant = input.variant ?? (ag.variant && full?.variants?.[ag.variant] ? ag.variant : undefined)
+        const created = Date.now()
+        const submission = input.submission ? { ...input.submission, dispatchedAt: input.submission.dispatchedAt ?? created } : undefined
 
         const info: MessageV2.Info = {
           id: input.messageID ?? MessageID.ascending(),
           role: "user",
           sessionID: input.sessionID,
-          time: { created: Date.now() },
+          time: { created },
           tools: input.tools,
           agent: ag.name,
           model,
           system: input.system,
           format: input.format,
           variant,
+          submission,
         }
 
         yield* Effect.addFinalizer(() =>
@@ -1782,6 +1795,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           agent: userAgent,
           parts,
           variant: input.variant,
+          submission: input.submission,
         })
         yield* bus.publish(Command.Event.Executed, {
           name: input.command,

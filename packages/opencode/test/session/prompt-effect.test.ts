@@ -1190,6 +1190,77 @@ pluginIt.live(
   10_000,
 )
 
+it.live(
+  "queued prompt dispatch persists submission provenance on the executed user message",
+  () =>
+    provideTmpdirServer(
+      Effect.fnUntraced(function* ({ llm }) {
+        const prompt = yield* SessionPrompt.Service
+        const queue = yield* SessionQueue.Service
+        const sessions = yield* Session.Service
+        const chat = yield* sessions.create({ title: "Queued submission provenance" })
+        const firstGate = defer<void>()
+
+        yield* llm.hold("first reply", firstGate.promise)
+        yield* llm.text("second reply")
+        yield* user(chat.id, "hello first")
+
+        const first = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.forkChild)
+        yield* llm.wait(1)
+
+        const pending = yield* queue.enqueue({
+          sessionID: chat.id,
+          mode: "queue",
+          payload: {
+            kind: "prompt",
+            agent: "build",
+            model: ref,
+            variant: "default",
+            parts: [{ type: "text", text: "hello second" }],
+          },
+          source: "test",
+        })
+
+        firstGate.resolve()
+        yield* llm.wait(2)
+
+        const firstExit = yield* Fiber.await(first)
+        expect(Exit.isSuccess(firstExit)).toBe(true)
+
+        const queuedUser = yield* Effect.promise(async () => {
+          const end = Date.now() + 5000
+          while (Date.now() < end) {
+            const msgs = await Effect.runPromise(sessions.messages({ sessionID: chat.id }))
+            const secondUser = msgs
+              .filter((msg): msg is MessageV2.WithParts & { info: MessageV2.User } => msg.info.role === "user")
+              .find((msg) => msg.parts.some((part) => part.type === "text" && part.text === "hello second"))
+            if (secondUser) return secondUser
+            await new Promise((done) => setTimeout(done, 20))
+          }
+          throw new Error("timed out waiting for queued user message")
+        })
+
+        const msgs = yield* sessions.messages({ sessionID: chat.id })
+        const firstUser = msgs.find((msg): msg is MessageV2.WithParts & { info: MessageV2.User } => {
+          if (msg.info.role !== "user") return false
+          return msg.parts.some((part) => part.type === "text" && part.text === "hello first")
+        })
+
+        expect(firstUser?.info.submission).toBeUndefined()
+        expect(queuedUser.info.submission).toMatchObject({
+          mode: "queue",
+          source: "test",
+          queuedAt: pending.time.created,
+          createdFromPendingMessageID: pending.id,
+        })
+        expect(typeof queuedUser.info.submission?.dispatchedAt).toBe("number")
+        expect(queuedUser.info.submission?.dispatchedAt).toBeGreaterThanOrEqual(pending.time.created)
+      }),
+      { git: true, config: providerCfg },
+    ),
+  10_000,
+)
+
 it.live("concurrent loop callers get same result", () =>
   provideTmpdirInstance(
     (dir) =>

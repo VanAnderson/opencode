@@ -1,5 +1,5 @@
 import { BusEvent } from "@/bus/bus-event"
-import { SessionID, MessageID, PartID } from "./schema"
+import { SessionID, MessageID, PartID, PendingMessageID } from "./schema"
 import z from "zod"
 import { NamedError } from "@opencode-ai/util/error"
 import { APICallError, convertToModelMessages, LoadAPIKeyError, type ModelMessage, type UIMessage } from "ai"
@@ -349,6 +349,25 @@ export namespace MessageV2 {
   })
   export type ToolPart = z.infer<typeof ToolPart>
 
+  export const SubmissionMode = z.enum(["immediate", "queue", "steer"]).meta({
+    ref: "SubmissionMode",
+  })
+  export type SubmissionMode = z.infer<typeof SubmissionMode>
+
+  export const Submission = z
+    .object({
+      mode: SubmissionMode,
+      source: z.string().optional(),
+      queuedAt: z.number().optional(),
+      dispatchedAt: z.number().optional(),
+      supersedesExecutionID: z.string().optional(),
+      createdFromPendingMessageID: PendingMessageID.zod.optional(),
+    })
+    .meta({
+      ref: "Submission",
+    })
+  export type Submission = z.infer<typeof Submission>
+
   const Base = z.object({
     id: MessageID.zod,
     sessionID: SessionID.zod,
@@ -375,6 +394,7 @@ export namespace MessageV2 {
     system: z.string().optional(),
     tools: z.record(z.string(), z.boolean()).optional(),
     variant: z.string().optional(),
+    submission: Submission.optional(),
   }).meta({
     ref: "UserMessage",
   })

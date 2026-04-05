@@ -27,6 +27,7 @@ export namespace SessionQueue {
     sessionID: true,
     messageID: true,
     noReply: true,
+    submission: true,
   })
     .extend({
       kind: z.literal("prompt"),
@@ -39,6 +40,7 @@ export namespace SessionQueue {
   export const PendingMessageCommandPayload = SessionPromptInput.CommandInput.omit({
     sessionID: true,
     messageID: true,
+    submission: true,
   })
     .extend({
       kind: z.literal("command"),

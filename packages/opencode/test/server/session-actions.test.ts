@@ -201,6 +201,10 @@ describe("session action routes", () => {
         expect(prompt).toHaveBeenCalledWith({
           ...promptPayload("ship it"),
           sessionID: session.id,
+          submission: {
+            mode: "immediate",
+            source: "app",
+          },
         })
         expect(await SessionQueue.list(session.id)).toEqual([])
 
