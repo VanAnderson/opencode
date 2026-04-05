@@ -173,6 +173,67 @@ describe("SessionQueue", () => {
     })
   })
 
+  test("persists pending messages across instance reload", async () => {
+    let sessionID: string | undefined
+    let firstID: string | undefined
+    let secondID: string | undefined
+
+    await Instance.provide({
+      directory: projectRoot,
+      fn: async () => {
+        const session = await Session.create({})
+        sessionID = session.id
+
+        const first = await SessionQueue.enqueue({
+          sessionID: session.id,
+          mode: "queue",
+          payload: promptPayload("reload-first"),
+        })
+        const second = await SessionQueue.enqueue({
+          sessionID: session.id,
+          mode: "steer",
+          payload: promptPayload("reload-second"),
+        })
+
+        firstID = first.id
+        secondID = second.id
+      },
+    })
+
+    try {
+      await Instance.provide({
+        directory: projectRoot,
+        fn: async () => {
+          expect(
+            (await SessionQueue.list(sessionID!)).map((item) => ({
+              id: item.id,
+              status: item.status,
+              position: item.position,
+            })),
+          ).toEqual([
+            {
+              id: firstID,
+              status: "queued",
+              position: 0,
+            },
+            {
+              id: secondID,
+              status: "queued",
+              position: 1,
+            },
+          ])
+        },
+      })
+    } finally {
+      await Instance.provide({
+        directory: projectRoot,
+        fn: async () => {
+          await Session.remove(sessionID!)
+        },
+      })
+    }
+  })
+
   test("marks queued items blocked after interrupt without touching excluded or newer work", async () => {
     await Instance.provide({
       directory: projectRoot,
