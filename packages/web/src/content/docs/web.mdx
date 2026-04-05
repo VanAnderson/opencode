@@ -100,6 +100,49 @@ View and manage your sessions from the homepage. You can see active sessions and
 
 ![OpenCode Web - Active Session](../../assets/web/web-homepage-active-session.png)
 
+### Busy sessions
+
+When a session is idle, submitting from the composer sends the message immediately.
+
+When a session is already running, the browser composer exposes two explicit actions instead:
+
+- `Queue` adds a pending message without interrupting the active run.
+- `Steer` interrupts the active run and makes the new message the next instruction the agent sees.
+
+The default busy-submit behavior is controlled by the browser app's **Follow-up behavior** setting in General settings. If you leave that setting on `Queue`, pressing Enter while the session is busy adds the message to the queue. If you switch it to `Steer`, the busy default becomes steer instead.
+
+Queued messages are server-backed, not browser-local. Each pending item snapshots the prompt payload and the execution context needed to replay it, including the selected agent, model, variant, and attachments.
+
+### Queue dock
+
+Whenever a session has pending work, the web interface shows a queue dock near the composer. Each item includes:
+
+- a preview of the queued message
+- the queued timestamp
+- agent and model metadata
+- attachment counts when present
+- the current queue status
+
+You can manage pending items before they execute:
+
+- edit the queued item in place
+- delete it
+- move it up or down
+- send it now
+- clear the whole queue
+
+### After steering
+
+Steering does not silently discard older queued work. If a queued item was created against the interrupted execution context, OpenCode marks it as blocked and requires explicit `Resume` confirmation before it can run.
+
+This keeps the queue visible after an interruption and prevents stale follow-ups from running blindly against a new execution context.
+
+If you are upgrading from an older browser-only queue, legacy `followup.v1` drafts are migrated into the shared backend queue when the session opens.
+
+:::tip
+Prompts and slash commands participate in queueing. Shell-mode submissions keep their existing immediate behavior and are not queued in v1.
+:::
+
 ### Server Status
 
 Click "See Servers" to view connected servers and their status.
@@ -121,6 +164,8 @@ opencode attach http://localhost:4096
 ```
 
 This allows you to use both the web interface and terminal simultaneously, sharing the same sessions and state.
+
+Queued messages are shared too. If you attach a TUI to the same backend started by `opencode web`, both frontends see the same server-backed queue state for each session.
 
 ---
 

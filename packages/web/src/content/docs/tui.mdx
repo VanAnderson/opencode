@@ -27,6 +27,44 @@ Give me a quick summary of the codebase.
 
 ---
 
+## Busy sessions
+
+When the session is idle, submitting from the prompt sends immediately.
+
+When the session is busy and the prompt is in normal mode, OpenCode uses the queued-message flow instead:
+
+- pressing Enter queues by default
+- the command palette exposes explicit `Queue prompt` and `Steer prompt` actions
+- `Steer prompt` interrupts the active run and makes the new message take priority
+- the normal interrupt action still stays separate and aborts the active run
+
+Use `Esc` twice to interrupt the current session directly. Steering is a separate submit path: it keeps older queued work visible as `blocked after interrupt` instead of silently discarding it.
+
+This is intentionally different from shell mode. Commands that start with `!` keep their existing immediate execution path and are not added to the queued-message system in TUI v1.
+
+### Session queue
+
+The prompt footer shows a queue summary whenever pending items exist. You can open the session queue from the command palette to inspect and manage pending work.
+
+The queue modal supports:
+
+- inspect
+- edit supported queued items in place
+- delete
+- reorder
+- send now
+- resume blocked items after a steer
+
+If a steer interrupts active work, older queued items from that interrupted execution are kept visible and move into a blocked state until you explicitly resume them.
+
+Some queued prompt payloads are intentionally not editable in TUI v1. If a pending item contains extra synthetic or comment text that cannot be faithfully reconstructed back into the terminal composer, OpenCode leaves it inspectable and manageable but hides the edit action.
+
+:::tip
+Prompts and slash commands participate in queueing. Shell-mode submissions keep their existing immediate behavior and are not queued in v1.
+:::
+
+---
+
 ## File references
 
 You can reference files in your messages using `@`. This does a fuzzy file search in the current working directory.
