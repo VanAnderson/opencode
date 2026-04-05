@@ -108,34 +108,91 @@ export namespace SessionPrompt {
       const state = yield* InstanceState.make(
         Effect.fn("SessionPrompt.state")(function* () {
           const runners = new Map<string, Runner<MessageV2.WithParts>>()
+          const dispatching = new Set<SessionID>()
           yield* Effect.addFinalizer(
             Effect.fnUntraced(function* () {
               yield* Effect.forEach(runners.values(), (r) => r.cancel, { concurrency: "unbounded", discard: true })
               runners.clear()
+              dispatching.clear()
             }),
           )
-          return { runners }
+          return { runners, dispatching }
         }),
       )
 
-      const dispatchQueued = Effect.fn("SessionPrompt.dispatchQueued")(function* (sessionID: SessionID) {
-        const pending = yield* queue.consumeHead(sessionID)
-        if (!pending) return
+      const toQueueError = (error: NonNullable<MessageV2.Assistant["error"]>) => {
+        const data = "data" in error && error.data && typeof error.data === "object" ? error.data : undefined
+        const message =
+          data && "message" in data && typeof data.message === "string" && data.message
+            ? data.message
+            : error.name
 
-        switch (pending.payload.kind) {
-          case "prompt":
-            yield* prompt({
-              sessionID,
-              ...pending.payload,
-            })
-            return
-          case "command":
-            yield* command({
-              sessionID,
-              ...pending.payload,
-            })
-            return
+        return {
+          message,
+          code: error.name,
         }
+      }
+
+      const dispatchQueued = Effect.fn("SessionPrompt.dispatchQueued")(function* (sessionID: SessionID) {
+        const s = yield* InstanceState.get(state)
+        return yield* Effect.acquireUseRelease(
+          Effect.sync(() => {
+            if (s.dispatching.has(sessionID)) return false
+            s.dispatching.add(sessionID)
+            return true
+          }),
+          (acquired) =>
+            !acquired
+              ? Effect.void
+              : Effect.gen(function* () {
+                  while (true) {
+                    const pending = yield* queue.claimHead(sessionID)
+                    if (!pending) return
+
+                    const exit = yield* Effect.exit(
+                      pending.payload.kind === "prompt"
+                        ? prompt({
+                            sessionID,
+                            ...pending.payload,
+                          })
+                        : command({
+                            sessionID,
+                            ...pending.payload,
+                          }),
+                    )
+
+                    if (Exit.isFailure(exit)) {
+                      const error = Cause.squash(exit.cause)
+                      yield* queue.fail({
+                        sessionID,
+                        pendingMessageID: pending.id,
+                        error: {
+                          message:
+                            error instanceof Error
+                              ? error.message || error.name || String(error)
+                              : String(error),
+                        },
+                      })
+                      return
+                    }
+
+                    if (exit.value.info.role === "assistant" && exit.value.info.error) {
+                      yield* queue.fail({
+                        sessionID,
+                        pendingMessageID: pending.id,
+                        error: toQueueError(exit.value.info.error),
+                      })
+                      return
+                    }
+
+                    yield* queue.complete({
+                      sessionID,
+                      pendingMessageID: pending.id,
+                    })
+                  }
+                }),
+          (acquired) => (acquired ? Effect.sync(() => s.dispatching.delete(sessionID)) : Effect.void),
+        )
       })
 
       const getRunner = (runners: Map<string, Runner<MessageV2.WithParts>>, sessionID: SessionID) => {

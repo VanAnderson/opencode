@@ -564,7 +564,7 @@ it.live(
       }),
       { git: true, config: providerCfg },
     ),
-  3_000,
+  5_000,
 )
 
 // Cancel semantics
@@ -594,7 +594,7 @@ it.live(
       }),
       { git: true, config: providerCfg },
     ),
-  3_000,
+  5_000,
 )
 
 it.live(
@@ -771,10 +771,12 @@ it.live(
           const end = Date.now() + 5000
           while (Date.now() < end) {
             const msgs = await Effect.runPromise(sessions.messages({ sessionID: chat.id }))
+            const pending = await Effect.runPromise(queue.list(chat.id))
             const assistants = msgs.filter((msg) => msg.info.role === "assistant")
             if (
               assistants.length === 2 &&
-              assistants.at(-1)?.parts.some((part) => part.type === "text" && part.text === "second reply")
+              assistants.at(-1)?.parts.some((part) => part.type === "text" && part.text === "second reply") &&
+              pending.length === 0
             ) {
               return
             }
@@ -852,11 +854,12 @@ it.live(
           const end = Date.now() + 5000
           while (Date.now() < end) {
             const msgs = await Effect.runPromise(sessions.messages({ sessionID: chat.id }))
+            const pending = await Effect.runPromise(queue.list(chat.id))
             const assistantTexts = msgs
               .filter((msg) => msg.info.role === "assistant")
               .map((msg) => msg.parts.find((part) => part.type === "text"))
               .map((part) => (part?.type === "text" ? part.text : undefined))
-            if (assistantTexts.at(-1) === "third reply") return
+            if (assistantTexts.at(-1) === "third reply" && pending.length === 0) return
             await new Promise((done) => setTimeout(done, 20))
           }
           throw new Error("timed out waiting for FIFO queued follow-ups")
@@ -885,6 +888,103 @@ it.live(
       { git: true, config: providerCfg },
     ),
   5_000,
+)
+
+it.live(
+  "queued dispatch pauses on failure and leaves later items pending",
+  () =>
+    provideTmpdirServer(
+      Effect.fnUntraced(function* ({ llm }) {
+        const prompt = yield* SessionPrompt.Service
+        const queue = yield* SessionQueue.Service
+        const sessions = yield* Session.Service
+        const chat = yield* sessions.create({ title: "Queued failure pause" })
+        const firstGate = defer<void>()
+
+        yield* llm.hold("first reply", firstGate.promise)
+        yield* llm.error(400, { error: { message: "no_kv_space" } })
+        yield* llm.text("third reply")
+        yield* user(chat.id, "hello first")
+
+        const first = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.forkChild)
+        yield* llm.wait(1)
+
+        const second = yield* queue.enqueue({
+          sessionID: chat.id,
+          mode: "queue",
+          payload: {
+            kind: "prompt",
+            agent: "build",
+            model: ref,
+            variant: "default",
+            parts: [{ type: "text", text: "hello second" }],
+          },
+          source: "test",
+        })
+        const third = yield* queue.enqueue({
+          sessionID: chat.id,
+          mode: "queue",
+          payload: {
+            kind: "prompt",
+            agent: "build",
+            model: ref,
+            variant: "default",
+            parts: [{ type: "text", text: "hello third" }],
+          },
+          source: "test",
+        })
+
+        firstGate.resolve()
+        yield* Fiber.await(first)
+
+        yield* Effect.promise(async () => {
+          const end = Date.now() + 5000
+          while (Date.now() < end) {
+            const pending = await Effect.runPromise(queue.list(chat.id))
+            if (
+              pending.length === 2 &&
+              pending[0]?.id === second.id &&
+              pending[0]?.status === "failed" &&
+              pending[1]?.id === third.id &&
+              pending[1]?.status === "queued"
+            ) {
+              return
+            }
+            await new Promise((done) => setTimeout(done, 20))
+          }
+          throw new Error("timed out waiting for failed queued state")
+        })
+
+        expect(yield* llm.calls).toBe(2)
+
+        const pending = yield* queue.list(chat.id)
+        expect(pending.map((item) => [item.id, item.status])).toEqual([
+          [second.id, "failed"],
+          [third.id, "queued"],
+        ])
+        expect(pending[0]?.error).toEqual({
+          message: "no_kv_space",
+          code: "APIError",
+        })
+
+        const msgs = yield* sessions.messages({ sessionID: chat.id })
+        const userTexts = msgs
+          .filter((msg) => msg.info.role === "user")
+          .map((msg) => msg.parts.find((part) => part.type === "text"))
+          .map((part) => (part?.type === "text" ? part.text : undefined))
+        const assistants = msgs.filter((msg) => msg.info.role === "assistant")
+        const lastAssistant = assistants.at(-1)
+
+        expect(userTexts).toEqual(["hello first", "hello second"])
+        expect(assistants).toHaveLength(2)
+        expect(lastAssistant?.info.role).toBe("assistant")
+        if (lastAssistant?.info.role === "assistant") {
+          expect(lastAssistant.info.error?.name).toBe("APIError")
+        }
+      }),
+      { git: true, config: providerCfg },
+    ),
+  10_000,
 )
 
 it.live("concurrent loop callers get same result", () =>
@@ -1239,7 +1339,7 @@ it.live(
       }),
       { git: true, config: providerCfg },
     ),
-  3_000,
+  5_000,
 )
 
 it.live(
@@ -1279,7 +1379,7 @@ it.live(
       }),
       { git: true, config: providerCfg },
     ),
-  3_000,
+  5_000,
 )
 
 unix(

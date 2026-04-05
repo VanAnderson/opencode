@@ -256,4 +256,65 @@ describe("SessionQueue", () => {
       },
     })
   })
+
+  test("claims queued work, removes completed items, and pauses on failed heads", async () => {
+    await Instance.provide({
+      directory: projectRoot,
+      fn: async () => {
+        const session = await Session.create({})
+
+        try {
+          const first = await SessionQueue.enqueue({
+            sessionID: session.id,
+            mode: "queue",
+            payload: promptPayload("first"),
+          })
+          const second = await SessionQueue.enqueue({
+            sessionID: session.id,
+            mode: "queue",
+            payload: promptPayload("second"),
+          })
+
+          const claimed = await SessionQueue.claimHead(session.id)
+          expect(claimed?.id).toBe(first.id)
+          expect(claimed?.status).toBe("running")
+          expect((await SessionQueue.list(session.id)).map((item) => [item.id, item.status])).toEqual([
+            [first.id, "running"],
+            [second.id, "queued"],
+          ])
+
+          expect(await SessionQueue.claimHead(session.id)).toBeUndefined()
+
+          const failed = await SessionQueue.fail({
+            sessionID: session.id,
+            pendingMessageID: first.id,
+            error: { message: "boom", code: "Unknown" },
+          })
+          expect(failed.status).toBe("failed")
+          expect((await SessionQueue.list(session.id)).map((item) => [item.id, item.status])).toEqual([
+            [first.id, "failed"],
+            [second.id, "queued"],
+          ])
+          expect(await SessionQueue.claimHead(session.id)).toBeUndefined()
+
+          await SessionQueue.remove({
+            sessionID: session.id,
+            pendingMessageID: first.id,
+          })
+
+          const next = await SessionQueue.claimHead(session.id)
+          expect(next?.id).toBe(second.id)
+          expect(next?.status).toBe("running")
+
+          await SessionQueue.complete({
+            sessionID: session.id,
+            pendingMessageID: second.id,
+          })
+          expect(await SessionQueue.list(session.id)).toEqual([])
+        } finally {
+          await Session.remove(session.id)
+        }
+      },
+    })
+  })
 })

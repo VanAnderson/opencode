@@ -145,6 +145,19 @@ export namespace SessionQueue {
   })
   export type MarkBlockedAfterInterruptInput = z.infer<typeof MarkBlockedAfterInterruptInput>
 
+  export const CompleteInput = z.object({
+    sessionID: SessionID.zod,
+    pendingMessageID: PendingMessageID.zod,
+  })
+  export type CompleteInput = z.infer<typeof CompleteInput>
+
+  export const FailInput = z.object({
+    sessionID: SessionID.zod,
+    pendingMessageID: PendingMessageID.zod,
+    error: PendingMessageError,
+  })
+  export type FailInput = z.infer<typeof FailInput>
+
   export interface Interface {
     readonly list: (sessionID: SessionID) => Effect.Effect<PendingMessage[]>
     readonly get: (input: RemoveInput) => Effect.Effect<PendingMessage>
@@ -155,6 +168,9 @@ export namespace SessionQueue {
     readonly reorder: (input: ReorderInput) => Effect.Effect<PendingMessage[]>
     readonly promote: (input: PromoteInput) => Effect.Effect<PendingMessage>
     readonly markBlockedAfterInterrupt: (input: MarkBlockedAfterInterruptInput) => Effect.Effect<PendingMessage[]>
+    readonly claimHead: (sessionID: SessionID) => Effect.Effect<PendingMessage | undefined>
+    readonly complete: (input: CompleteInput) => Effect.Effect<void>
+    readonly fail: (input: FailInput) => Effect.Effect<PendingMessage>
     readonly consumeHead: (sessionID: SessionID) => Effect.Effect<PendingMessage | undefined>
   }
 
@@ -443,6 +459,70 @@ export namespace SessionQueue {
         return pending
       })
 
+      const claimHead = Effect.fn("SessionQueue.claimHead")(function* (sessionID: SessionID) {
+        const pending = yield* Effect.sync(() =>
+          Database.transaction((db) => {
+            const head = listRows(db, sessionID)[0]
+            if (!head) return undefined
+            if (head.status !== "queued") return undefined
+
+            db.update(PendingMessageTable)
+              .set({
+                status: "running",
+                time_updated: Date.now(),
+              })
+              .where(eq(PendingMessageTable.id, head.id))
+              .run()
+
+            return fromRow(getRow(db, { sessionID, pendingMessageID: head.id }))
+          }),
+        )
+        if (pending) yield* publishUpdated(sessionID)
+        return pending
+      })
+
+      const complete = Effect.fn("SessionQueue.complete")(function* (input: CompleteInput) {
+        yield* Effect.sync(() =>
+          Database.transaction((db) => {
+            getRow(db, input)
+            db.delete(PendingMessageTable)
+              .where(
+                and(
+                  eq(PendingMessageTable.session_id, input.sessionID),
+                  eq(PendingMessageTable.id, input.pendingMessageID),
+                ),
+              )
+              .run()
+            normalizePositions(db, input.sessionID, Date.now())
+          }),
+        )
+        yield* publishUpdated(input.sessionID)
+      })
+
+      const fail = Effect.fn("SessionQueue.fail")(function* (input: FailInput) {
+        const pending = yield* Effect.sync(() =>
+          Database.transaction((db) => {
+            getRow(db, input)
+            db.update(PendingMessageTable)
+              .set({
+                status: "failed",
+                error: input.error,
+                time_updated: Date.now(),
+              })
+              .where(
+                and(
+                  eq(PendingMessageTable.session_id, input.sessionID),
+                  eq(PendingMessageTable.id, input.pendingMessageID),
+                ),
+              )
+              .run()
+            return fromRow(getRow(db, input))
+          }),
+        )
+        yield* publishUpdated(input.sessionID)
+        return pending
+      })
+
       const consumeHead = Effect.fn("SessionQueue.consumeHead")(function* (sessionID: SessionID) {
         const pending = yield* Effect.sync(() =>
           Database.transaction((db) => {
@@ -469,6 +549,9 @@ export namespace SessionQueue {
         reorder,
         promote,
         markBlockedAfterInterrupt,
+        claimHead,
+        complete,
+        fail,
         consumeHead,
       })
     }),
@@ -488,6 +571,9 @@ export namespace SessionQueue {
   export const markBlockedAfterInterrupt = fn(MarkBlockedAfterInterruptInput, (input) =>
     runPromise((svc) => svc.markBlockedAfterInterrupt(input)),
   )
+  export const claimHead = fn(SessionID.zod, (sessionID) => runPromise((svc) => svc.claimHead(sessionID)))
+  export const complete = fn(CompleteInput, (input) => runPromise((svc) => svc.complete(input)))
+  export const fail = fn(FailInput, (input) => runPromise((svc) => svc.fail(input)))
   export const consumeHead = fn(SessionID.zod, (sessionID) => runPromise((svc) => svc.consumeHead(sessionID)))
 }
 
