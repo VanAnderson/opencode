@@ -164,6 +164,8 @@ import type {
   SessionShellResponses,
   SessionStatusErrors,
   SessionStatusResponses,
+  SessionSubmitErrors,
+  SessionSubmitResponses,
   SessionSummarizeErrors,
   SessionSummarizeResponses,
   SessionTodoErrors,
@@ -1848,6 +1850,53 @@ export class Session2 extends HeyApiClient {
     )
     return (options?.client ?? this.client).post<SessionQueueCreateResponses, SessionQueueCreateErrors, ThrowOnError>({
       url: "/session/{sessionID}/queue",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Submit session input
+   *
+   * Submit a prompt or command to a session. When the session is idle, the submission executes immediately through the existing prompt or command path. When the session is busy, the submission is persisted in the session queue and returned for later execution.
+   */
+  public submit<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      directory?: string
+      workspace?: string
+      mode?: PendingMessageMode
+      payload?: PendingMessagePromptPayload | PendingMessageCommandPayload
+      source?: string
+      createdAgainstExecutionID?: string
+      supersedesExecutionID?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "mode" },
+            { in: "body", key: "payload" },
+            { in: "body", key: "source" },
+            { in: "body", key: "createdAgainstExecutionID" },
+            { in: "body", key: "supersedesExecutionID" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<SessionSubmitResponses, SessionSubmitErrors, ThrowOnError>({
+      url: "/session/{sessionID}/submit",
       ...options,
       ...params,
       headers: {

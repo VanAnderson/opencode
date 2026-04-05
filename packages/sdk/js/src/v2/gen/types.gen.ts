@@ -3432,6 +3432,59 @@ export type SessionQueueCreateResponses = {
 
 export type SessionQueueCreateResponse = SessionQueueCreateResponses[keyof SessionQueueCreateResponses]
 
+export type SessionSubmitData = {
+  body?: {
+    mode?: PendingMessageMode
+    payload: PendingMessagePromptPayload | PendingMessageCommandPayload
+    source?: string
+    createdAgainstExecutionID?: string
+    supersedesExecutionID?: string
+  }
+  path: {
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/session/{sessionID}/submit"
+}
+
+export type SessionSubmitErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type SessionSubmitError = SessionSubmitErrors[keyof SessionSubmitErrors]
+
+export type SessionSubmitResponses = {
+  /**
+   * Immediate execution result or queued submission
+   */
+  200:
+    | {
+        kind: "immediate"
+        message: {
+          info: Message
+          parts: Array<Part>
+        }
+      }
+    | {
+        kind: "queued"
+        pending: PendingMessage
+        queue: Array<PendingMessage>
+        status: SessionStatus
+      }
+}
+
+export type SessionSubmitResponse = SessionSubmitResponses[keyof SessionSubmitResponses]
+
 export type SessionQueueDeleteData = {
   body?: never
   path: {
