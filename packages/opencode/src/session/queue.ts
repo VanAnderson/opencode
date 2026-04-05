@@ -148,6 +148,13 @@ export namespace SessionQueue {
   })
   export type MarkBlockedAfterInterruptInput = z.infer<typeof MarkBlockedAfterInterruptInput>
 
+  export const RebaseExecutionContextInput = z.object({
+    sessionID: SessionID.zod,
+    fromExecutionID: z.string(),
+    toExecutionID: z.string(),
+  })
+  export type RebaseExecutionContextInput = z.infer<typeof RebaseExecutionContextInput>
+
   export const CompleteInput = z.object({
     sessionID: SessionID.zod,
     pendingMessageID: PendingMessageID.zod,
@@ -171,6 +178,7 @@ export namespace SessionQueue {
     readonly reorder: (input: ReorderInput) => Effect.Effect<PendingMessage[]>
     readonly promote: (input: PromoteInput) => Effect.Effect<PendingMessage>
     readonly markBlockedAfterInterrupt: (input: MarkBlockedAfterInterruptInput) => Effect.Effect<PendingMessage[]>
+    readonly rebaseExecutionContext: (input: RebaseExecutionContextInput) => Effect.Effect<PendingMessage[]>
     readonly claimHead: (sessionID: SessionID) => Effect.Effect<PendingMessage | undefined>
     readonly complete: (input: CompleteInput) => Effect.Effect<void>
     readonly fail: (input: FailInput) => Effect.Effect<PendingMessage>
@@ -475,6 +483,41 @@ export namespace SessionQueue {
         return pending
       })
 
+      const rebaseExecutionContext = Effect.fn("SessionQueue.rebaseExecutionContext")(function* (
+        input: RebaseExecutionContextInput,
+      ) {
+        const pending = yield* Effect.sync(() =>
+          Database.transaction((db) => {
+            const updatedIDs = new Set<string>()
+            const now = Date.now()
+
+            for (const row of listRows(db, input.sessionID)) {
+              if (row.created_against_execution_id !== input.fromExecutionID) continue
+              db.update(PendingMessageTable)
+                .set({
+                  created_against_execution_id: input.toExecutionID,
+                  time_updated: now,
+                })
+                .where(
+                  and(
+                    eq(PendingMessageTable.session_id, input.sessionID),
+                    eq(PendingMessageTable.id, row.id),
+                  ),
+                )
+                .run()
+              updatedIDs.add(row.id)
+            }
+
+            if (updatedIDs.size === 0) return [] as PendingMessage[]
+            return listRows(db, input.sessionID)
+              .filter((row) => updatedIDs.has(row.id))
+              .map(fromRow)
+          }),
+        )
+        if (pending.length > 0) yield* publishUpdated(input.sessionID)
+        return pending
+      })
+
       const claimHead = Effect.fn("SessionQueue.claimHead")(function* (sessionID: SessionID) {
         const pending = yield* Effect.sync(() =>
           Database.transaction((db) => {
@@ -565,6 +608,7 @@ export namespace SessionQueue {
         reorder,
         promote,
         markBlockedAfterInterrupt,
+        rebaseExecutionContext,
         claimHead,
         complete,
         fail,
@@ -586,6 +630,9 @@ export namespace SessionQueue {
   export const promote = fn(PromoteInput, (input) => runPromise((svc) => svc.promote(input)))
   export const markBlockedAfterInterrupt = fn(MarkBlockedAfterInterruptInput, (input) =>
     runPromise((svc) => svc.markBlockedAfterInterrupt(input)),
+  )
+  export const rebaseExecutionContext = fn(RebaseExecutionContextInput, (input) =>
+    runPromise((svc) => svc.rebaseExecutionContext(input)),
   )
   export const claimHead = fn(SessionID.zod, (sessionID) => runPromise((svc) => svc.claimHead(sessionID)))
   export const complete = fn(CompleteInput, (input) => runPromise((svc) => svc.complete(input)))

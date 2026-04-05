@@ -202,6 +202,16 @@ export namespace SessionPrompt {
                         return
                       }
 
+                      const nextExecutionID =
+                        exit.value.info.role === "assistant" ? exit.value.info.parentID : undefined
+                      if (nextExecutionID) {
+                        yield* queue.rebaseExecutionContext({
+                          sessionID,
+                          fromExecutionID: pending.id,
+                          toExecutionID: nextExecutionID,
+                        })
+                      }
+
                       yield* queue.complete({
                         sessionID,
                         pendingMessageID: pending.id,

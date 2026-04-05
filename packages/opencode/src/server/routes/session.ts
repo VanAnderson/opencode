@@ -58,6 +58,11 @@ function activeExecutionID(sessionID: SessionID) {
   return lastUser?.info.id
 }
 
+async function queuedSteerContextID(sessionID: SessionID) {
+  const pending = await SessionQueue.list(sessionID)
+  return pending.find((item) => item.mode === "steer" && ["queued", "running"].includes(item.status))?.id
+}
+
 export const SessionRoutes = lazy(() =>
   new Hono()
     .get(
@@ -256,12 +261,14 @@ export const SessionRoutes = lazy(() =>
         const status = await SessionStatus.get(sessionID)
         if (status.type !== "idle") {
           const executionID = activeExecutionID(sessionID)
+          const steerContextID =
+            body.mode === "queue" && !body.createdAgainstExecutionID ? await queuedSteerContextID(sessionID) : undefined
           const queued = await SessionQueue.enqueue({
             sessionID,
             mode: body.mode,
             payload: body.payload,
             source: body.source,
-            createdAgainstExecutionID: body.createdAgainstExecutionID ?? executionID,
+            createdAgainstExecutionID: body.createdAgainstExecutionID ?? steerContextID ?? executionID,
             supersedesExecutionID: body.supersedesExecutionID ?? (body.mode === "steer" ? executionID : undefined),
           })
           const pending =
