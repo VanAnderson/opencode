@@ -234,6 +234,51 @@ describe("session action routes", () => {
     })
   })
 
+  test("queue update route reconfirms blocked items and resumes queued dispatch", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const session = await Session.create({})
+        const app = Server.Default()
+        const runQueuedIfIdle = spyOn(SessionPrompt, "runQueuedIfIdle").mockResolvedValue()
+
+        const pending = await SessionQueue.enqueue({
+          sessionID: session.id,
+          mode: "queue",
+          payload: promptPayload("resume me"),
+        })
+
+        await SessionQueue.update({
+          sessionID: session.id,
+          pendingMessageID: pending.id,
+          status: "blocked_after_interrupt",
+        })
+
+        const resumed = await app.request(`/session/${session.id}/queue/${pending.id}`, {
+          method: "PATCH",
+          headers: {
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            status: "queued",
+          }),
+        })
+
+        expect(resumed.status).toBe(200)
+        const body = (await resumed.json()) as SessionQueue.PendingMessage
+        expect(body).toMatchObject({
+          id: pending.id,
+          status: "queued",
+        })
+        expect(body.error).toBeUndefined()
+        expect(runQueuedIfIdle).toHaveBeenCalledWith(session.id)
+
+        await Session.remove(session.id)
+      },
+    })
+  })
+
   test("submit route executes immediately when the session is idle", async () => {
     await using tmp = await tmpdir({ git: true })
     await Instance.provide({
