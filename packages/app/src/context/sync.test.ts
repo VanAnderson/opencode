@@ -102,7 +102,7 @@ beforeAll(async () => {
     useSDK: () => sdkMock,
   }))
 
-  await import("./sync")
+  await import("./sync.tsx?sync-test")
 })
 
 beforeEach(() => {
