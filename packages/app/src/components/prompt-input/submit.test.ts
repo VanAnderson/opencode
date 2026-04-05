@@ -18,6 +18,8 @@ const optimistic: Array<{
 const optimisticSeeded: boolean[] = []
 const storedSessions: Record<string, Array<{ id: string; title?: string }>> = {}
 const promoted: Array<{ directory: string; sessionID: string }> = []
+const submitted: Array<{ directory: string; input: Record<string, unknown> }> = []
+const promptAsyncCalls: string[] = []
 const sentShell: string[] = []
 const syncedDirectories: string[] = []
 
@@ -44,8 +46,15 @@ const clientFor = (directory: string) => {
         sentShell.push(directory)
         return { data: undefined }
       },
+      submit: async (input: Record<string, unknown>) => {
+        submitted.push({ directory, input })
+        return { data: { pending: undefined, queue: [] } }
+      },
       prompt: async () => ({ data: undefined }),
-      promptAsync: async () => ({ data: undefined }),
+      promptAsync: async () => {
+        promptAsyncCalls.push(directory)
+        return { data: undefined }
+      },
       command: async () => ({ data: undefined }),
       abort: async () => ({ data: undefined }),
     },
@@ -208,6 +217,8 @@ beforeEach(() => {
   optimistic.length = 0
   optimisticSeeded.length = 0
   promoted.length = 0
+  submitted.length = 0
+  promptAsyncCalls.length = 0
   params = {}
   sentShell.length = 0
   syncedDirectories.length = 0
@@ -342,5 +353,52 @@ describe("prompt submit worktree selection", () => {
 
     expect(storedSessions["/repo/worktree-a"]).toEqual([{ id: "session-1", title: "New session 1" }])
     expect(optimisticSeeded).toEqual([true])
+  })
+
+  test("queues busy normal prompts through session.submit", async () => {
+    params = { id: "session-1" }
+    let submitCount = 0
+
+    const submit = createPromptSubmit({
+      info: () => ({ id: "session-1" }),
+      imageAttachments: () => [],
+      commentCount: () => 0,
+      autoAccept: () => false,
+      mode: () => "normal",
+      working: () => true,
+      editor: () => undefined,
+      queueScroll: () => undefined,
+      promptLength: (value) => value.reduce((sum, part) => sum + ("content" in part ? part.content.length : 0), 0),
+      addToHistory: () => undefined,
+      resetHistoryNavigation: () => undefined,
+      setMode: () => undefined,
+      setPopover: () => undefined,
+      shouldQueue: () => true,
+      onSubmit: () => {
+        submitCount += 1
+      },
+    })
+
+    const event = { preventDefault: () => undefined } as unknown as Event
+
+    await submit.handleSubmit(event)
+
+    expect(submitted).toHaveLength(1)
+    expect(submitted[0]).toMatchObject({
+      directory: "/repo/main",
+      input: {
+        sessionID: "session-1",
+        mode: "queue",
+        source: "app",
+        payload: {
+          kind: "prompt",
+          agent: "agent",
+          model: { providerID: "provider", modelID: "model" },
+        },
+      },
+    })
+    expect(promptAsyncCalls).toEqual([])
+    expect(optimistic).toEqual([])
+    expect(submitCount).toBe(1)
   })
 })
