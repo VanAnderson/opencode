@@ -2,6 +2,7 @@ import { afterEach, describe, expect, mock, spyOn, test } from "bun:test"
 import { Instance } from "../../src/project/instance"
 import { Server } from "../../src/server/server"
 import { Session } from "../../src/session"
+import { SessionQueue } from "../../src/session/queue"
 import { ModelID, ProviderID } from "../../src/provider/schema"
 import { MessageID, PartID, type SessionID } from "../../src/session/schema"
 import { SessionPrompt } from "../../src/session/prompt"
@@ -32,6 +33,24 @@ async function user(sessionID: SessionID, text: string) {
     text,
   })
   return msg
+}
+
+function promptPayload(text: string) {
+  return {
+    kind: "prompt" as const,
+    agent: "default",
+    model: {
+      providerID: "openai" as const,
+      modelID: "gpt-4.1" as const,
+    },
+    variant: "default",
+    parts: [
+      {
+        type: "text" as const,
+        text,
+      },
+    ],
+  }
 }
 
 describe("session action routes", () => {
@@ -75,6 +94,119 @@ describe("session action routes", () => {
         expect(res.status).toBe(400)
         expect(busy).toHaveBeenCalledWith(session.id)
         expect(remove).not.toHaveBeenCalled()
+
+        await Session.remove(session.id)
+      },
+    })
+  })
+
+  test("queue CRUD routes manage pending messages", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const session = await Session.create({})
+        const app = Server.Default()
+
+        const created = await app.request(`/session/${session.id}/queue`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            mode: "queue",
+            payload: promptPayload("first"),
+            source: "app",
+          }),
+        })
+
+        expect(created.status).toBe(200)
+        const pending = (await created.json()) as SessionQueue.PendingMessage
+        expect(pending.mode).toBe("queue")
+        expect(pending.payload.kind).toBe("prompt")
+
+        const listed = await app.request(`/session/${session.id}/queue`)
+        expect(listed.status).toBe(200)
+        expect(((await listed.json()) as SessionQueue.PendingMessage[]).map((item) => item.id)).toEqual([pending.id])
+
+        const updated = await app.request(`/session/${session.id}/queue/${pending.id}`, {
+          method: "PATCH",
+          headers: {
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            status: "failed",
+            error: { message: "boom" },
+          }),
+        })
+        expect(updated.status).toBe(200)
+        expect(((await updated.json()) as SessionQueue.PendingMessage).status).toBe("failed")
+
+        const removed = await app.request(`/session/${session.id}/queue/${pending.id}`, {
+          method: "DELETE",
+        })
+        expect(removed.status).toBe(200)
+        expect(await removed.json()).toBe(true)
+        expect(await SessionQueue.list(session.id)).toEqual([])
+
+        await Session.remove(session.id)
+      },
+    })
+  })
+
+  test("queue reorder, promote, and clear routes return updated queue state", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const session = await Session.create({})
+        const app = Server.Default()
+
+        const first = await SessionQueue.enqueue({
+          sessionID: session.id,
+          mode: "queue",
+          payload: promptPayload("first"),
+        })
+        const second = await SessionQueue.enqueue({
+          sessionID: session.id,
+          mode: "queue",
+          payload: promptPayload("second"),
+        })
+        const third = await SessionQueue.enqueue({
+          sessionID: session.id,
+          mode: "queue",
+          payload: promptPayload("third"),
+        })
+
+        const reordered = await app.request(`/session/${session.id}/queue/reorder`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            pendingMessageIDs: [third.id, first.id, second.id],
+          }),
+        })
+        expect(reordered.status).toBe(200)
+        expect(((await reordered.json()) as SessionQueue.PendingMessage[]).map((item) => item.id)).toEqual([
+          third.id,
+          first.id,
+          second.id,
+        ])
+
+        const promoted = await app.request(`/session/${session.id}/queue/${second.id}/promote`, {
+          method: "POST",
+        })
+        expect(promoted.status).toBe(200)
+        expect(((await promoted.json()) as SessionQueue.PendingMessage).id).toBe(second.id)
+        expect((await SessionQueue.list(session.id)).map((item) => item.id)).toEqual([second.id, third.id, first.id])
+
+        const cleared = await app.request(`/session/${session.id}/queue/clear`, {
+          method: "POST",
+        })
+        expect(cleared.status).toBe(200)
+        expect(await cleared.json()).toBe(true)
+        expect(await SessionQueue.list(session.id)).toEqual([])
 
         await Session.remove(session.id)
       },

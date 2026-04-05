@@ -11,6 +11,7 @@ import { SessionRevert } from "../../session/revert"
 import { SessionStatus } from "@/session/status"
 import { SessionSummary } from "@/session/summary"
 import { Todo } from "../../session/todo"
+import { SessionQueue } from "@/session/queue"
 import { Agent } from "../../agent/agent"
 import { Snapshot } from "@/snapshot"
 import { Log } from "../../util/log"
@@ -155,6 +156,246 @@ export const SessionRoutes = lazy(() =>
         const sessionID = c.req.valid("param").sessionID
         const session = await Session.children(sessionID)
         return c.json(session)
+      },
+    )
+    .get(
+      "/:sessionID/queue",
+      describeRoute({
+        summary: "Get session queue",
+        description: "Retrieve the pending queued and steer submissions for a session in execution order.",
+        operationId: "session.queue",
+        responses: {
+          200: {
+            description: "Pending session queue",
+            content: {
+              "application/json": {
+                schema: resolver(SessionQueue.PendingMessage.array()),
+              },
+            },
+          },
+          ...errors(400, 404),
+        },
+      }),
+      validator(
+        "param",
+        z.object({
+          sessionID: SessionID.zod,
+        }),
+      ),
+      async (c) => {
+        const sessionID = c.req.valid("param").sessionID
+        await Session.get(sessionID)
+        const pending = await SessionQueue.list(sessionID)
+        return c.json(pending)
+      },
+    )
+    .post(
+      "/:sessionID/queue",
+      describeRoute({
+        summary: "Enqueue session submission",
+        description:
+          "Create a pending queued or steer submission for a session without immediately executing it. This incremental route exists separately from the future queue-aware submit endpoint so queue persistence can be validated independently.",
+        operationId: "session.queue_create",
+        responses: {
+          200: {
+            description: "Created pending message",
+            content: {
+              "application/json": {
+                schema: resolver(SessionQueue.PendingMessage),
+              },
+            },
+          },
+          ...errors(400, 404),
+        },
+      }),
+      validator(
+        "param",
+        z.object({
+          sessionID: SessionID.zod,
+        }),
+      ),
+      validator("json", SessionQueue.EnqueueInput.omit({ sessionID: true })),
+      async (c) => {
+        const sessionID = c.req.valid("param").sessionID
+        const body = c.req.valid("json")
+        await Session.get(sessionID)
+        const pending = await SessionQueue.enqueue({ ...body, sessionID })
+        return c.json(pending)
+      },
+    )
+    .patch(
+      "/:sessionID/queue/:pendingMessageID",
+      describeRoute({
+        summary: "Update session queue item",
+        description: "Update a pending queued or steer submission for a session.",
+        operationId: "session.queue_update",
+        responses: {
+          200: {
+            description: "Updated pending message",
+            content: {
+              "application/json": {
+                schema: resolver(SessionQueue.PendingMessage),
+              },
+            },
+          },
+          ...errors(400, 404),
+        },
+      }),
+      validator(
+        "param",
+        z.object({
+          sessionID: SessionID.zod,
+          pendingMessageID: SessionQueue.UpdateInput.shape.pendingMessageID,
+        }),
+      ),
+      validator("json", SessionQueue.UpdateInput.omit({ sessionID: true, pendingMessageID: true })),
+      async (c) => {
+        const params = c.req.valid("param")
+        const body = c.req.valid("json")
+        await Session.get(params.sessionID)
+        const pending = await SessionQueue.update({
+          ...body,
+          sessionID: params.sessionID,
+          pendingMessageID: params.pendingMessageID,
+        })
+        return c.json(pending)
+      },
+    )
+    .delete(
+      "/:sessionID/queue/:pendingMessageID",
+      describeRoute({
+        summary: "Delete session queue item",
+        description: "Delete a pending queued or steer submission from a session queue.",
+        operationId: "session.queue_delete",
+        responses: {
+          200: {
+            description: "Deleted pending message",
+            content: {
+              "application/json": {
+                schema: resolver(z.boolean()),
+              },
+            },
+          },
+          ...errors(400, 404),
+        },
+      }),
+      validator(
+        "param",
+        z.object({
+          sessionID: SessionID.zod,
+          pendingMessageID: SessionQueue.RemoveInput.shape.pendingMessageID,
+        }),
+      ),
+      async (c) => {
+        const params = c.req.valid("param")
+        await Session.get(params.sessionID)
+        await SessionQueue.remove({
+          sessionID: params.sessionID,
+          pendingMessageID: params.pendingMessageID,
+        })
+        return c.json(true)
+      },
+    )
+    .post(
+      "/:sessionID/queue/reorder",
+      describeRoute({
+        summary: "Reorder session queue",
+        description: "Replace the queue ordering for a session using a complete list of pending message IDs.",
+        operationId: "session.queue_reorder",
+        responses: {
+          200: {
+            description: "Reordered session queue",
+            content: {
+              "application/json": {
+                schema: resolver(SessionQueue.PendingMessage.array()),
+              },
+            },
+          },
+          ...errors(400, 404),
+        },
+      }),
+      validator(
+        "param",
+        z.object({
+          sessionID: SessionID.zod,
+        }),
+      ),
+      validator("json", SessionQueue.ReorderInput.omit({ sessionID: true })),
+      async (c) => {
+        const sessionID = c.req.valid("param").sessionID
+        const body = c.req.valid("json")
+        await Session.get(sessionID)
+        const pending = await SessionQueue.reorder({
+          ...body,
+          sessionID,
+        })
+        return c.json(pending)
+      },
+    )
+    .post(
+      "/:sessionID/queue/:pendingMessageID/promote",
+      describeRoute({
+        summary: "Promote session queue item",
+        description: "Move a pending queued or steer submission to the front of the queue.",
+        operationId: "session.queue_promote",
+        responses: {
+          200: {
+            description: "Promoted pending message",
+            content: {
+              "application/json": {
+                schema: resolver(SessionQueue.PendingMessage),
+              },
+            },
+          },
+          ...errors(400, 404),
+        },
+      }),
+      validator(
+        "param",
+        z.object({
+          sessionID: SessionID.zod,
+          pendingMessageID: SessionQueue.PromoteInput.shape.pendingMessageID,
+        }),
+      ),
+      async (c) => {
+        const params = c.req.valid("param")
+        await Session.get(params.sessionID)
+        const pending = await SessionQueue.promote({
+          sessionID: params.sessionID,
+          pendingMessageID: params.pendingMessageID,
+        })
+        return c.json(pending)
+      },
+    )
+    .post(
+      "/:sessionID/queue/clear",
+      describeRoute({
+        summary: "Clear session queue",
+        description: "Remove all pending queued and steer submissions from a session queue.",
+        operationId: "session.queue_clear",
+        responses: {
+          200: {
+            description: "Cleared session queue",
+            content: {
+              "application/json": {
+                schema: resolver(z.boolean()),
+              },
+            },
+          },
+          ...errors(400, 404),
+        },
+      }),
+      validator(
+        "param",
+        z.object({
+          sessionID: SessionID.zod,
+        }),
+      ),
+      async (c) => {
+        const sessionID = c.req.valid("param").sessionID
+        await Session.get(sessionID)
+        await SessionQueue.clear(sessionID)
+        return c.json(true)
       },
     )
     .get(
