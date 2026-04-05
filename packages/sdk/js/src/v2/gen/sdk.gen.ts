@@ -76,6 +76,11 @@ import type {
   PartUpdateErrors,
   PartUpdateResponses,
   PathGetResponses,
+  PendingMessageCommandPayload,
+  PendingMessageError,
+  PendingMessageMode,
+  PendingMessagePromptPayload,
+  PendingMessageStatus,
   PermissionListResponses,
   PermissionReplyErrors,
   PermissionReplyResponses,
@@ -137,6 +142,20 @@ import type {
   SessionPromptAsyncResponses,
   SessionPromptErrors,
   SessionPromptResponses,
+  SessionQueueClearErrors,
+  SessionQueueClearResponses,
+  SessionQueueCreateErrors,
+  SessionQueueCreateResponses,
+  SessionQueueDeleteErrors,
+  SessionQueueDeleteResponses,
+  SessionQueueErrors,
+  SessionQueuePromoteErrors,
+  SessionQueuePromoteResponses,
+  SessionQueueReorderErrors,
+  SessionQueueReorderResponses,
+  SessionQueueResponses,
+  SessionQueueUpdateErrors,
+  SessionQueueUpdateResponses,
   SessionRevertErrors,
   SessionRevertResponses,
   SessionShareErrors,
@@ -1753,6 +1772,285 @@ export class Session2 extends HeyApiClient {
     )
     return (options?.client ?? this.client).get<SessionChildrenResponses, SessionChildrenErrors, ThrowOnError>({
       url: "/session/{sessionID}/children",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Get session queue
+   *
+   * Retrieve the pending queued and steer submissions for a session in execution order.
+   */
+  public queue<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<SessionQueueResponses, SessionQueueErrors, ThrowOnError>({
+      url: "/session/{sessionID}/queue",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Enqueue session submission
+   *
+   * Create a pending queued or steer submission for a session without immediately executing it. This incremental route exists separately from the future queue-aware submit endpoint so queue persistence can be validated independently.
+   */
+  public queueCreate<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      directory?: string
+      workspace?: string
+      mode?: PendingMessageMode
+      payload?: PendingMessagePromptPayload | PendingMessageCommandPayload
+      source?: string
+      createdAgainstExecutionID?: string
+      supersedesExecutionID?: string
+      error?: PendingMessageError
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "mode" },
+            { in: "body", key: "payload" },
+            { in: "body", key: "source" },
+            { in: "body", key: "createdAgainstExecutionID" },
+            { in: "body", key: "supersedesExecutionID" },
+            { in: "body", key: "error" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<SessionQueueCreateResponses, SessionQueueCreateErrors, ThrowOnError>({
+      url: "/session/{sessionID}/queue",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Delete session queue item
+   *
+   * Delete a pending queued or steer submission from a session queue.
+   */
+  public queueDelete<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      pendingMessageID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "path", key: "pendingMessageID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).delete<SessionQueueDeleteResponses, SessionQueueDeleteErrors, ThrowOnError>(
+      {
+        url: "/session/{sessionID}/queue/{pendingMessageID}",
+        ...options,
+        ...params,
+      },
+    )
+  }
+
+  /**
+   * Update session queue item
+   *
+   * Update a pending queued or steer submission for a session.
+   */
+  public queueUpdate<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      pendingMessageID: string
+      directory?: string
+      workspace?: string
+      mode?: PendingMessageMode
+      status?: PendingMessageStatus
+      payload?: PendingMessagePromptPayload | PendingMessageCommandPayload
+      source?: string | null
+      createdAgainstExecutionID?: string | null
+      supersedesExecutionID?: string | null
+      error?: PendingMessageError | null
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "path", key: "pendingMessageID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "mode" },
+            { in: "body", key: "status" },
+            { in: "body", key: "payload" },
+            { in: "body", key: "source" },
+            { in: "body", key: "createdAgainstExecutionID" },
+            { in: "body", key: "supersedesExecutionID" },
+            { in: "body", key: "error" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).patch<SessionQueueUpdateResponses, SessionQueueUpdateErrors, ThrowOnError>({
+      url: "/session/{sessionID}/queue/{pendingMessageID}",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Reorder session queue
+   *
+   * Replace the queue ordering for a session using a complete list of pending message IDs.
+   */
+  public queueReorder<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      directory?: string
+      workspace?: string
+      pendingMessageIDs?: Array<string>
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "pendingMessageIDs" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<SessionQueueReorderResponses, SessionQueueReorderErrors, ThrowOnError>(
+      {
+        url: "/session/{sessionID}/queue/reorder",
+        ...options,
+        ...params,
+        headers: {
+          "Content-Type": "application/json",
+          ...options?.headers,
+          ...params.headers,
+        },
+      },
+    )
+  }
+
+  /**
+   * Promote session queue item
+   *
+   * Move a pending queued or steer submission to the front of the queue.
+   */
+  public queuePromote<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      pendingMessageID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "path", key: "pendingMessageID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<SessionQueuePromoteResponses, SessionQueuePromoteErrors, ThrowOnError>(
+      {
+        url: "/session/{sessionID}/queue/{pendingMessageID}/promote",
+        ...options,
+        ...params,
+      },
+    )
+  }
+
+  /**
+   * Clear session queue
+   *
+   * Remove all pending queued and steer submissions from a session queue.
+   */
+  public queueClear<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<SessionQueueClearResponses, SessionQueueClearErrors, ThrowOnError>({
+      url: "/session/{sessionID}/queue/clear",
       ...options,
       ...params,
     })

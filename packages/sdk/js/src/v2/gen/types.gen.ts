@@ -461,6 +461,181 @@ export type EventWorkspaceFailed = {
   }
 }
 
+export type PendingMessageMode = "queue" | "steer"
+
+export type PendingMessageStatus = "queued" | "running" | "blocked_after_interrupt" | "failed" | "canceled" | "consumed"
+
+export type OutputFormatText = {
+  type: "text"
+}
+
+export type JsonSchema = {
+  [key: string]: unknown
+}
+
+export type OutputFormatJsonSchema = {
+  type: "json_schema"
+  schema: JsonSchema
+  retryCount?: number
+}
+
+export type OutputFormat = OutputFormatText | OutputFormatJsonSchema
+
+export type TextPartInput = {
+  id?: string
+  type: "text"
+  text: string
+  synthetic?: boolean
+  ignored?: boolean
+  time?: {
+    start: number
+    end?: number
+  }
+  metadata?: {
+    [key: string]: unknown
+  }
+}
+
+export type FilePartSourceText = {
+  value: string
+  start: number
+  end: number
+}
+
+export type FileSource = {
+  text: FilePartSourceText
+  type: "file"
+  path: string
+}
+
+export type Range = {
+  start: {
+    line: number
+    character: number
+  }
+  end: {
+    line: number
+    character: number
+  }
+}
+
+export type SymbolSource = {
+  text: FilePartSourceText
+  type: "symbol"
+  path: string
+  range: Range
+  name: string
+  kind: number
+}
+
+export type ResourceSource = {
+  text: FilePartSourceText
+  type: "resource"
+  clientName: string
+  uri: string
+}
+
+export type FilePartSource = FileSource | SymbolSource | ResourceSource
+
+export type FilePartInput = {
+  id?: string
+  type: "file"
+  mime: string
+  filename?: string
+  url: string
+  source?: FilePartSource
+}
+
+export type AgentPartInput = {
+  id?: string
+  type: "agent"
+  name: string
+  source?: {
+    value: string
+    start: number
+    end: number
+  }
+}
+
+export type SubtaskPartInput = {
+  id?: string
+  type: "subtask"
+  prompt: string
+  description: string
+  agent: string
+  model?: {
+    providerID: string
+    modelID: string
+  }
+  command?: string
+}
+
+export type PendingMessagePromptPayload = {
+  model?: {
+    providerID: string
+    modelID: string
+  }
+  agent?: string
+  /**
+   * @deprecated tools and permissions have been merged, you can set permissions on the session itself now
+   */
+  tools?: {
+    [key: string]: boolean
+  }
+  format?: OutputFormat
+  system?: string
+  variant?: string
+  parts: Array<TextPartInput | FilePartInput | AgentPartInput | SubtaskPartInput>
+  kind: "prompt"
+}
+
+export type PendingMessageCommandPayload = {
+  agent?: string
+  model?: string
+  arguments: string
+  command: string
+  variant?: string
+  parts?: Array<{
+    id?: string
+    type: "file"
+    mime: string
+    filename?: string
+    url: string
+    source?: FilePartSource
+  }>
+  kind: "command"
+}
+
+export type PendingMessageError = {
+  message: string
+  code?: string
+}
+
+export type PendingMessage = {
+  id: string
+  sessionID: string
+  position: number
+  mode: PendingMessageMode
+  status: PendingMessageStatus
+  payload: PendingMessagePromptPayload | PendingMessageCommandPayload
+  source?: string
+  createdAgainstExecutionID?: string
+  supersedesExecutionID?: string
+  error?: PendingMessageError
+  time: {
+    created: number
+    updated: number
+  }
+}
+
+export type EventSessionQueueUpdated = {
+  type: "session.queue.updated"
+  properties: {
+    sessionID: string
+    pending: Array<PendingMessage>
+  }
+}
+
 export type Pty = {
   id: string
   title: string
@@ -514,22 +689,6 @@ export type EventWorktreeFailed = {
     message: string
   }
 }
-
-export type OutputFormatText = {
-  type: "text"
-}
-
-export type JsonSchema = {
-  [key: string]: unknown
-}
-
-export type OutputFormatJsonSchema = {
-  type: "json_schema"
-  schema: JsonSchema
-  retryCount?: number
-}
-
-export type OutputFormat = OutputFormatText | OutputFormatJsonSchema
 
 export type UserMessage = {
   id: string
@@ -662,47 +821,6 @@ export type ReasoningPart = {
     end?: number
   }
 }
-
-export type FilePartSourceText = {
-  value: string
-  start: number
-  end: number
-}
-
-export type FileSource = {
-  text: FilePartSourceText
-  type: "file"
-  path: string
-}
-
-export type Range = {
-  start: {
-    line: number
-    character: number
-  }
-  end: {
-    line: number
-    character: number
-  }
-}
-
-export type SymbolSource = {
-  text: FilePartSourceText
-  type: "symbol"
-  path: string
-  range: Range
-  name: string
-  kind: number
-}
-
-export type ResourceSource = {
-  text: FilePartSourceText
-  type: "resource"
-  clientName: string
-  uri: string
-}
-
-export type FilePartSource = FileSource | SymbolSource | ResourceSource
 
 export type FilePart = {
   id: string
@@ -996,6 +1114,7 @@ export type Event =
   | EventVcsBranchUpdated
   | EventWorkspaceReady
   | EventWorkspaceFailed
+  | EventSessionQueueUpdated
   | EventPtyCreated
   | EventPtyUpdated
   | EventPtyExited
@@ -1829,54 +1948,6 @@ export type McpResource = {
   description?: string
   mimeType?: string
   client: string
-}
-
-export type TextPartInput = {
-  id?: string
-  type: "text"
-  text: string
-  synthetic?: boolean
-  ignored?: boolean
-  time?: {
-    start: number
-    end?: number
-  }
-  metadata?: {
-    [key: string]: unknown
-  }
-}
-
-export type FilePartInput = {
-  id?: string
-  type: "file"
-  mime: string
-  filename?: string
-  url: string
-  source?: FilePartSource
-}
-
-export type AgentPartInput = {
-  id?: string
-  type: "agent"
-  name: string
-  source?: {
-    value: string
-    start: number
-    end: number
-  }
-}
-
-export type SubtaskPartInput = {
-  id?: string
-  type: "subtask"
-  prompt: string
-  description: string
-  agent: string
-  model?: {
-    providerID: string
-    modelID: string
-  }
-  command?: string
 }
 
 export type ProviderAuthMethod = {
@@ -3285,6 +3356,264 @@ export type SessionChildrenResponses = {
 }
 
 export type SessionChildrenResponse = SessionChildrenResponses[keyof SessionChildrenResponses]
+
+export type SessionQueueData = {
+  body?: never
+  path: {
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/session/{sessionID}/queue"
+}
+
+export type SessionQueueErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type SessionQueueError = SessionQueueErrors[keyof SessionQueueErrors]
+
+export type SessionQueueResponses = {
+  /**
+   * Pending session queue
+   */
+  200: Array<PendingMessage>
+}
+
+export type SessionQueueResponse = SessionQueueResponses[keyof SessionQueueResponses]
+
+export type SessionQueueCreateData = {
+  body?: {
+    mode: PendingMessageMode
+    payload: PendingMessagePromptPayload | PendingMessageCommandPayload
+    source?: string
+    createdAgainstExecutionID?: string
+    supersedesExecutionID?: string
+    error?: PendingMessageError
+  }
+  path: {
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/session/{sessionID}/queue"
+}
+
+export type SessionQueueCreateErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type SessionQueueCreateError = SessionQueueCreateErrors[keyof SessionQueueCreateErrors]
+
+export type SessionQueueCreateResponses = {
+  /**
+   * Created pending message
+   */
+  200: PendingMessage
+}
+
+export type SessionQueueCreateResponse = SessionQueueCreateResponses[keyof SessionQueueCreateResponses]
+
+export type SessionQueueDeleteData = {
+  body?: never
+  path: {
+    sessionID: string
+    pendingMessageID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/session/{sessionID}/queue/{pendingMessageID}"
+}
+
+export type SessionQueueDeleteErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type SessionQueueDeleteError = SessionQueueDeleteErrors[keyof SessionQueueDeleteErrors]
+
+export type SessionQueueDeleteResponses = {
+  /**
+   * Deleted pending message
+   */
+  200: boolean
+}
+
+export type SessionQueueDeleteResponse = SessionQueueDeleteResponses[keyof SessionQueueDeleteResponses]
+
+export type SessionQueueUpdateData = {
+  body?: {
+    mode?: PendingMessageMode
+    status?: PendingMessageStatus
+    payload?: PendingMessagePromptPayload | PendingMessageCommandPayload
+    source?: string | null
+    createdAgainstExecutionID?: string | null
+    supersedesExecutionID?: string | null
+    error?: PendingMessageError | null
+  }
+  path: {
+    sessionID: string
+    pendingMessageID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/session/{sessionID}/queue/{pendingMessageID}"
+}
+
+export type SessionQueueUpdateErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type SessionQueueUpdateError = SessionQueueUpdateErrors[keyof SessionQueueUpdateErrors]
+
+export type SessionQueueUpdateResponses = {
+  /**
+   * Updated pending message
+   */
+  200: PendingMessage
+}
+
+export type SessionQueueUpdateResponse = SessionQueueUpdateResponses[keyof SessionQueueUpdateResponses]
+
+export type SessionQueueReorderData = {
+  body?: {
+    pendingMessageIDs: Array<string>
+  }
+  path: {
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/session/{sessionID}/queue/reorder"
+}
+
+export type SessionQueueReorderErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type SessionQueueReorderError = SessionQueueReorderErrors[keyof SessionQueueReorderErrors]
+
+export type SessionQueueReorderResponses = {
+  /**
+   * Reordered session queue
+   */
+  200: Array<PendingMessage>
+}
+
+export type SessionQueueReorderResponse = SessionQueueReorderResponses[keyof SessionQueueReorderResponses]
+
+export type SessionQueuePromoteData = {
+  body?: never
+  path: {
+    sessionID: string
+    pendingMessageID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/session/{sessionID}/queue/{pendingMessageID}/promote"
+}
+
+export type SessionQueuePromoteErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type SessionQueuePromoteError = SessionQueuePromoteErrors[keyof SessionQueuePromoteErrors]
+
+export type SessionQueuePromoteResponses = {
+  /**
+   * Promoted pending message
+   */
+  200: PendingMessage
+}
+
+export type SessionQueuePromoteResponse = SessionQueuePromoteResponses[keyof SessionQueuePromoteResponses]
+
+export type SessionQueueClearData = {
+  body?: never
+  path: {
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/session/{sessionID}/queue/clear"
+}
+
+export type SessionQueueClearErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type SessionQueueClearError = SessionQueueClearErrors[keyof SessionQueueClearErrors]
+
+export type SessionQueueClearResponses = {
+  /**
+   * Cleared session queue
+   */
+  200: boolean
+}
+
+export type SessionQueueClearResponse = SessionQueueClearResponses[keyof SessionQueueClearResponses]
 
 export type SessionTodoData = {
   body?: never
