@@ -767,7 +767,7 @@ export const SessionRoutes = lazy(() =>
         }),
       ),
       async (c) => {
-        await SessionPrompt.cancel(c.req.valid("param").sessionID)
+        await SessionPrompt.interrupt({ sessionID: c.req.valid("param").sessionID, holdQueuedDispatch: true })
         return c.json(true)
       },
     )
