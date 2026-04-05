@@ -62,8 +62,12 @@ interface PromptInputProps {
   newSessionWorktree?: string
   onNewSessionWorktreeReset?: () => void
   edit?: { id: string; prompt: Prompt; context: FollowupDraft["context"] }
-  onEditLoaded?: () => void
-  shouldQueue?: () => boolean
+  followupMode?: () => "queue" | "steer" | undefined
+  onQueue?: (input: {
+    draft: FollowupDraft
+    pendingMessageID?: string
+    mode: "queue" | "steer"
+  }) => Promise<boolean> | boolean
   onAbort?: () => void
   onSubmit?: () => void
 }
@@ -287,6 +291,10 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     return text.trim().length === 0 && imageAttachments().length === 0 && commentCount() === 0
   })
   const stopping = createMemo(() => working() && blank())
+  const followupMode = createMemo(() => props.followupMode?.())
+  const showBusyFollowupActions = createMemo(
+    () => store.mode === "normal" && !!followupMode() && !stopping() && !props.edit?.id,
+  )
   const tip = () => {
     if (stopping()) {
       return (
@@ -1038,7 +1046,6 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
           setCursorPosition(editorRef, promptLength(edit.prompt))
           queueScroll()
         })
-        props.onEditLoaded?.()
       },
       { defer: true },
     ),
@@ -1108,7 +1115,9 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     setPopover: (popover) => setStore("popover", popover),
     newSessionWorktree: () => props.newSessionWorktree,
     onNewSessionWorktreeReset: props.onNewSessionWorktreeReset,
-    shouldQueue: props.shouldQueue,
+    followupMode,
+    editingQueueID: () => props.edit?.id,
+    onQueue: props.onQueue,
     onAbort: props.onAbort,
     onSubmit: props.onSubmit,
   })
@@ -1271,7 +1280,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
       ) {
         return
       }
-      handleSubmit(event)
+      void handleSubmit(event)
     }
   }
 
@@ -1293,7 +1302,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
         t={(key) => language.t(key as Parameters<typeof language.t>[0])}
       />
       <DockShellForm
-        onSubmit={handleSubmit}
+        onSubmit={(event) => void handleSubmit(event)}
         classList={{
           "group/prompt-input": true,
           "focus-within:shadow-xs-border": true,
@@ -1331,13 +1340,13 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
           onMouseDown={(e) => {
             const target = e.target
             if (!(target instanceof HTMLElement)) return
-            if (
-              target.closest(
-                '[data-action="prompt-attach"], [data-action="prompt-submit"], [data-action="prompt-permissions"]',
-              )
-            ) {
-              return
-            }
+                if (
+                  target.closest(
+                    '[data-action="prompt-attach"], [data-action="prompt-submit"], [data-action^="prompt-submit-"], [data-action="prompt-permissions"]',
+                  )
+                ) {
+                  return
+                }
             editorRef?.focus()
           }}
         >
@@ -1413,19 +1422,45 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
             />
 
             <div class="flex items-center gap-1 pointer-events-auto">
-              <Tooltip placement="top" inactive={!working() && blank()} value={tip()}>
-                <IconButton
-                  data-action="prompt-submit"
-                  type="submit"
-                  disabled={store.mode !== "normal" || (!working() && blank())}
-                  tabIndex={store.mode === "normal" ? undefined : -1}
-                  icon={stopping() ? "stop" : "arrow-up"}
-                  variant="primary"
-                  class="size-8"
-                  style={buttons()}
-                  aria-label={stopping() ? language.t("prompt.action.stop") : language.t("prompt.action.send")}
-                />
-              </Tooltip>
+              <Show
+                when={showBusyFollowupActions()}
+                fallback={
+                  <Tooltip placement="top" inactive={!working() && blank()} value={tip()}>
+                    <IconButton
+                      data-action="prompt-submit"
+                      type="submit"
+                      disabled={store.mode !== "normal" || (!working() && blank())}
+                      tabIndex={store.mode === "normal" ? undefined : -1}
+                      icon={stopping() ? "stop" : "arrow-up"}
+                      variant="primary"
+                      class="size-8"
+                      style={buttons()}
+                      aria-label={stopping() ? language.t("prompt.action.stop") : language.t("prompt.action.send")}
+                    />
+                  </Tooltip>
+                }
+              >
+                <div class="flex items-center gap-1" style={buttons()}>
+                  <Button
+                    data-action="prompt-submit-queue"
+                    type="button"
+                    size="small"
+                    variant={followupMode() === "queue" ? "primary" : "secondary"}
+                    onClick={(event: MouseEvent) => void handleSubmit(event, { followupMode: "queue" })}
+                  >
+                    {language.t("settings.general.row.followup.option.queue")}
+                  </Button>
+                  <Button
+                    data-action="prompt-submit-steer"
+                    type="button"
+                    size="small"
+                    variant={followupMode() === "steer" ? "primary" : "secondary"}
+                    onClick={(event: MouseEvent) => void handleSubmit(event, { followupMode: "steer" })}
+                  >
+                    {language.t("settings.general.row.followup.option.steer")}
+                  </Button>
+                </div>
+              </Show>
             </div>
           </div>
 

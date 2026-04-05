@@ -25,14 +25,27 @@ export function SessionComposerRegion(props: {
   onSubmit: () => void
   onResponseSubmit: () => void
   followup?: {
-    queue: () => boolean
-    items: { id: string; text: string }[]
+    mode: () => "queue" | "steer" | undefined
+    items: {
+      id: string
+      text: string
+      meta?: string
+      status?: string
+      sendDisabled?: boolean
+      editDisabled?: boolean
+      deleteDisabled?: boolean
+    }[]
     sending?: string
     edit?: { id: string; prompt: FollowupDraft["prompt"]; context: FollowupDraft["context"] }
+    onQueue?: (input: {
+      draft: FollowupDraft
+      pendingMessageID?: string
+      mode: "queue" | "steer"
+    }) => Promise<boolean> | boolean
     onAbort?: () => void
     onSend?: (id: string) => void
     onEdit?: (id: string) => void
-    onEditLoaded: () => void
+    onDelete?: (id: string) => void
   }
   revert?: {
     items: { id: string; text: string }[]
@@ -229,6 +242,7 @@ export function SessionComposerRegion(props: {
                   sending={props.followup!.sending}
                   onSend={props.followup!.onSend}
                   onEdit={props.followup!.onEdit}
+                  onDelete={props.followup!.onDelete}
                 />
               </Show>
               <PromptInput
@@ -236,8 +250,8 @@ export function SessionComposerRegion(props: {
                 newSessionWorktree={props.newSessionWorktree}
                 onNewSessionWorktreeReset={props.onNewSessionWorktreeReset}
                 edit={props.followup?.edit}
-                onEditLoaded={props.followup?.onEditLoaded}
-                shouldQueue={props.followup?.queue}
+                followupMode={props.followup?.mode}
+                onQueue={props.followup?.onQueue}
                 onAbort={props.followup?.onAbort}
                 onSubmit={props.onSubmit}
               />

@@ -59,6 +59,13 @@ import { useSessionHashScroll } from "@/pages/session/use-session-hash-scroll"
 import { extractPromptFromParts } from "@/utils/prompt"
 import { same } from "@/utils/same"
 import { formatServerError } from "@/utils/server-errors"
+import {
+  buildPendingMessagePayload,
+  type FollowupDraft,
+  pendingMessagePreview,
+  pendingMessageToEdit,
+  type FollowupEdit,
+} from "@/utils/session-queue"
 
 const emptyUserMessages: UserMessage[] = []
 const emptyPendingMessages: PendingMessage[] = []
@@ -1587,18 +1594,58 @@ export default function Page() {
     )
   }
 
+  const [followup, setFollowup] = createStore({
+    edit: undefined as FollowupEdit | undefined,
+  })
+
   const queuedFollowups = createMemo(() => {
     const id = params.id
     if (!id) return emptyPendingMessages
-    return sync.data.queue[id] ?? emptyPendingMessages
+    return (sync.data.queue[id] ?? emptyPendingMessages).filter(
+      (item) => item.status !== "consumed" && item.status !== "canceled",
+    )
+  })
+
+  const editingFollowup = createMemo(() => followup.edit)
+
+  createEffect(() => {
+    const edit = editingFollowup()
+    if (!edit) return
+    if (queuedFollowups().some((item) => item.id === edit.id)) return
+    setFollowup("edit", undefined)
   })
 
   const queueActionMutation = useMutation(() => ({
-    mutationFn: async (input: { sessionID: string; id: string }) => {
+    mutationFn: async (input: { sessionID: string; id: string; action: "send" | "delete" }) => {
+      const pending = (sync.data.queue[input.sessionID] ?? []).find((item) => item.id === input.id)
+      if (!pending) return
+
+      if (input.action === "delete") {
+        await sdk.client.session.queueDelete({
+          sessionID: input.sessionID,
+          pendingMessageID: input.id,
+        })
+        return
+      }
+
+      if (pending.status !== "queued") {
+        await sdk.client.session.queueUpdate({
+          sessionID: input.sessionID,
+          pendingMessageID: input.id,
+          status: "queued",
+        })
+      }
+
       await sdk.client.session.queuePromote({
         sessionID: input.sessionID,
         pendingMessageID: input.id,
       })
+    },
+    onSuccess: (_, input) => {
+      if (editingFollowup()?.id === input.id) {
+        setFollowup("edit", undefined)
+      }
+      if (input.action === "send") resumeScroll()
     },
     onError: fail,
   }))
@@ -1613,45 +1660,92 @@ export default function Page() {
     return queueActionMutation.variables?.id
   })
 
-  const queueEnabled = createMemo(() => {
+  const followupMode = createMemo<"queue" | "steer" | undefined>(() => {
     const id = params.id
-    if (!id) return false
-    return settings.general.followup() === "queue" && busy(id) && !composer.blocked()
+    if (!id) return undefined
+    if (!busy(id) || composer.blocked()) return undefined
+    return settings.general.followup()
   })
 
-  const followupText = (item: PendingMessage) => {
-    const text = (
+  const followupMeta = (item: PendingMessage) => {
+    const created = new Date(item.time.created).toLocaleTimeString([], {
+      hour: "numeric",
+      minute: "2-digit",
+    })
+    const agent = item.payload.agent
+    const model =
       item.payload.kind === "command"
-        ? [`/${item.payload.command}`, item.payload.arguments].filter(Boolean).join(" ")
-        : item.payload.parts
-            .map((part) => {
-              if (part.type === "text") return part.text
-              if (part.type === "agent") return `@${part.name}`
-              if (part.type === "subtask") return part.description || part.prompt
-              const path = part.source && "path" in part.source ? part.source.path : undefined
-              return `[file:${path ?? part.filename ?? language.t("common.attachment")}]`
-            })
-            .join("")
-    )
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .find((line) => !!line)
-
-    if (text) return text
-    if (item.payload.kind === "command") return `/${item.payload.command}`
-    return `[${language.t("common.attachment")}]`
+        ? item.payload.model
+        : item.payload.model
+          ? `${item.payload.model.providerID}/${item.payload.model.modelID}`
+          : undefined
+    return [created, agent, model].filter(Boolean).join(" • ")
   }
 
-  const followupDock = createMemo(() => queuedFollowups().map((item) => ({ id: item.id, text: followupText(item) })))
+  const followupStatus = (item: PendingMessage) => item.status.replaceAll("_", " ")
+
+  const followupDock = createMemo(() =>
+    queuedFollowups().map((item) => ({
+      id: item.id,
+      text: pendingMessagePreview(item),
+      meta: followupMeta(item),
+      status: followupStatus(item),
+      sendDisabled: item.status === "running",
+      editDisabled: item.status === "running",
+      deleteDisabled: item.status === "running",
+    })),
+  )
+
+  const queueFollowup = async (draft: FollowupDraft, pendingMessageID?: string, mode: "queue" | "steer" = "queue") => {
+    try {
+      const payload = buildPendingMessagePayload(draft, sync.data.command.map((item) => item.name))
+
+      if (pendingMessageID && mode === "queue") {
+        await sdk.client.session.queueUpdate({
+          sessionID: draft.sessionID,
+          pendingMessageID,
+          payload,
+        })
+        setFollowup("edit", undefined)
+        return true
+      }
+
+      if (pendingMessageID && mode === "steer") {
+        await sdk.client.session.queueDelete({
+          sessionID: draft.sessionID,
+          pendingMessageID,
+        })
+      }
+
+      await sdk.client.session.submit({
+        sessionID: draft.sessionID,
+        mode,
+        source: "app",
+        payload,
+      })
+      setFollowup("edit", undefined)
+      return true
+    } catch (err) {
+      fail(err)
+      return false
+    }
+  }
 
   const sendFollowup = (sessionID: string, id: string) => {
     if (followupBusy(sessionID)) return Promise.resolve()
-    return queueActionMutation.mutateAsync({ sessionID, id }).then(() => {
-      resumeScroll()
-    })
+    return queueActionMutation.mutateAsync({ sessionID, id, action: "send" })
   }
 
-  const clearFollowupEdit = () => {}
+  const deleteFollowup = (sessionID: string, id: string) => {
+    if (followupBusy(sessionID)) return Promise.resolve()
+    return queueActionMutation.mutateAsync({ sessionID, id, action: "delete" })
+  }
+
+  const editFollowup = (id: string) => {
+    const item = queuedFollowups().find((entry) => entry.id === id)
+    if (!item || item.status === "running") return
+    setFollowup("edit", pendingMessageToEdit(item, sdk.directory))
+  }
 
   const halt = (sessionID: string) =>
     busy(sessionID) ? sdk.client.session.abort({ sessionID }).catch(() => {}) : Promise.resolve()
@@ -1921,13 +2015,18 @@ export default function Page() {
             followup={
               params.id
                 ? {
-                    queue: queueEnabled,
+                    mode: followupMode,
                     items: followupDock(),
                     sending: sendingFollowup(),
+                    edit: editingFollowup(),
+                    onEdit: editFollowup,
+                    onDelete: (id) => {
+                      void deleteFollowup(params.id!, id)
+                    },
                     onSend: (id) => {
                       void sendFollowup(params.id!, id)
                     },
-                    onEditLoaded: clearFollowupEdit,
+                    onQueue: ({ draft, pendingMessageID, mode }) => queueFollowup(draft, pendingMessageID, mode),
                   }
                 : undefined
             }

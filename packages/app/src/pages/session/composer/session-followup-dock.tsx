@@ -6,10 +6,19 @@ import { IconButton } from "@opencode-ai/ui/icon-button"
 import { useLanguage } from "@/context/language"
 
 export function SessionFollowupDock(props: {
-  items: { id: string; text: string }[]
+  items: {
+    id: string
+    text: string
+    meta?: string
+    status?: string
+    sendDisabled?: boolean
+    editDisabled?: boolean
+    deleteDisabled?: boolean
+  }[]
   sending?: string
   onSend?: (id: string) => void
   onEdit?: (id: string) => void
+  onDelete?: (id: string) => void
 }) {
   const language = useLanguage()
   const [store, setStore] = createStore({
@@ -79,28 +88,53 @@ export function SessionFollowupDock(props: {
         <div class="px-3 pb-7 flex flex-col gap-1.5 max-h-42 overflow-y-auto no-scrollbar">
           <For each={props.items}>
             {(item) => (
-              <div class="flex items-center gap-2 min-w-0 py-1">
-                <span class="min-w-0 flex-1 truncate text-13-regular text-text-strong">{item.text}</span>
-                <Button
-                  size="small"
-                  variant="secondary"
-                  class="shrink-0"
-                  disabled={!!props.sending || !props.onSend}
-                  onClick={() => props.onSend?.(item.id)}
-                >
-                  {language.t("session.followupDock.sendNow")}
-                </Button>
-                <Show when={props.onEdit}>
+              <div class="flex items-start gap-2 min-w-0 py-1">
+                <div class="min-w-0 flex-1">
+                  <div class="flex items-center gap-2 min-w-0">
+                    <span class="min-w-0 flex-1 truncate text-13-regular text-text-strong">{item.text}</span>
+                    <Show when={item.status}>
+                      <span class="shrink-0 rounded-full bg-background-panel px-2 py-0.5 text-11-medium text-text-weak">
+                        {item.status}
+                      </span>
+                    </Show>
+                  </div>
+                  <Show when={item.meta}>
+                    <div class="truncate text-11-regular text-text-weak">{item.meta}</div>
+                  </Show>
+                </div>
+                <div class="shrink-0 flex items-center gap-1">
                   <Button
                     size="small"
-                    variant="ghost"
+                    variant="secondary"
                     class="shrink-0"
-                    disabled={!!props.sending}
-                    onClick={() => props.onEdit?.(item.id)}
+                    disabled={!!props.sending || !props.onSend || item.sendDisabled}
+                    onClick={() => props.onSend?.(item.id)}
                   >
-                    {language.t("session.followupDock.edit")}
+                    {language.t("session.followupDock.sendNow")}
                   </Button>
-                </Show>
+                  <Show when={props.onEdit}>
+                    <Button
+                      size="small"
+                      variant="ghost"
+                      class="shrink-0"
+                      disabled={!!props.sending || item.editDisabled}
+                      onClick={() => props.onEdit?.(item.id)}
+                    >
+                      {language.t("session.followupDock.edit")}
+                    </Button>
+                  </Show>
+                  <Show when={props.onDelete}>
+                    <Button
+                      size="small"
+                      variant="ghost"
+                      class="shrink-0"
+                      disabled={!!props.sending || item.deleteDisabled}
+                      onClick={() => props.onDelete?.(item.id)}
+                    >
+                      {language.t("common.delete")}
+                    </Button>
+                  </Show>
+                </div>
               </div>
             )}
           </For>

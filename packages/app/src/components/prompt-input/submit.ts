@@ -240,7 +240,13 @@ type PromptSubmitInput = {
   setPopover: (popover: "at" | "slash" | null) => void
   newSessionWorktree?: Accessor<string | undefined>
   onNewSessionWorktreeReset?: () => void
-  shouldQueue?: Accessor<boolean>
+  followupMode?: Accessor<"queue" | "steer" | undefined>
+  editingQueueID?: Accessor<string | undefined>
+  onQueue?: (input: {
+    draft: FollowupDraft
+    pendingMessageID?: string
+    mode: "queue" | "steer"
+  }) => Promise<boolean> | boolean
   onAbort?: () => void
   onSubmit?: () => void
 }
@@ -339,7 +345,7 @@ export function createPromptSubmit(input: PromptSubmitInput) {
     })
   }
 
-  const handleSubmit = async (event: Event) => {
+  const handleSubmit = async (event: Event, opts?: { followupMode?: "queue" | "steer" }) => {
     event.preventDefault()
 
     const currentPrompt = prompt.current()
@@ -478,18 +484,32 @@ export function createPromptSubmit(input: PromptSubmitInput) {
       })
     }
 
-    if (!isNewSession && mode === "normal" && input.shouldQueue?.()) {
-      const queued = await submitQueuedDraft({
-        client,
-        sync,
-        draft,
-      }).catch((err) => {
+    const queuedMode =
+      !isNewSession && mode === "normal" ? opts?.followupMode ?? input.followupMode?.() : undefined
+    if (queuedMode) {
+      let queued: boolean | object | undefined
+      try {
+        queued = await Promise.resolve(
+          input.onQueue
+            ? input.onQueue({
+                draft,
+                pendingMessageID: input.editingQueueID?.(),
+                mode: queuedMode,
+              })
+            : submitQueuedDraft({
+                client,
+                sync,
+                draft,
+                mode: queuedMode,
+              }),
+        )
+      } catch (err) {
         showToast({
           title: language.t("prompt.toast.promptSendFailed.title"),
           description: errorMessage(err),
         })
-        return undefined
-      })
+        return
+      }
       if (!queued) return
       promptProbe.submit({ sessionID: session.id, directory: sessionDirectory })
       input.onSubmit?.()
