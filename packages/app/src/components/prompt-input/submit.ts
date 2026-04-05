@@ -51,6 +51,64 @@ const draftText = (prompt: Prompt) => prompt.map((part) => ("content" in part ? 
 
 const draftImages = (prompt: Prompt) => prompt.filter((part): part is ImageAttachmentPart => part.type === "image")
 
+async function submitQueuedDraft(input: {
+  client: ReturnType<typeof useSDK>["client"]
+  sync: ReturnType<typeof useSync>
+  draft: FollowupDraft
+  mode?: "queue" | "steer"
+  source?: string
+}) {
+  const text = draftText(input.draft.prompt)
+  const images = draftImages(input.draft.prompt)
+  const [head, ...tail] = text.split(" ")
+  const cmd = head?.startsWith("/") ? head.slice(1) : undefined
+  if (cmd && input.sync.data.command.find((item) => item.name === cmd)) {
+    return input.client.session.submit({
+      sessionID: input.draft.sessionID,
+      mode: input.mode ?? "queue",
+      source: input.source ?? "app",
+      payload: {
+        kind: "command",
+        command: cmd,
+        arguments: tail.join(" "),
+        agent: input.draft.agent,
+        model: `${input.draft.model.providerID}/${input.draft.model.modelID}`,
+        variant: input.draft.variant,
+        parts: images.map((attachment) => ({
+          id: Identifier.ascending("part"),
+          type: "file" as const,
+          mime: attachment.mime,
+          url: attachment.dataUrl,
+          filename: attachment.filename,
+        })),
+      },
+    })
+  }
+
+  const { requestParts } = buildRequestParts({
+    prompt: input.draft.prompt,
+    context: input.draft.context,
+    images,
+    text,
+    sessionID: input.draft.sessionID,
+    messageID: Identifier.ascending("message"),
+    sessionDirectory: input.draft.sessionDirectory,
+  })
+
+  return input.client.session.submit({
+    sessionID: input.draft.sessionID,
+    mode: input.mode ?? "queue",
+    source: input.source ?? "app",
+    payload: {
+      kind: "prompt",
+      agent: input.draft.agent,
+      model: input.draft.model,
+      variant: input.draft.variant,
+      parts: requestParts,
+    },
+  })
+}
+
 export async function sendFollowupDraft(input: FollowupSendInput) {
   const text = draftText(input.draft.prompt)
   const images = draftImages(input.draft.prompt)
@@ -183,7 +241,6 @@ type PromptSubmitInput = {
   newSessionWorktree?: Accessor<string | undefined>
   onNewSessionWorktreeReset?: () => void
   shouldQueue?: Accessor<boolean>
-  onQueue?: (draft: FollowupDraft) => void
   onAbort?: () => void
   onSubmit?: () => void
 }
@@ -422,7 +479,20 @@ export function createPromptSubmit(input: PromptSubmitInput) {
     }
 
     if (!isNewSession && mode === "normal" && input.shouldQueue?.()) {
-      input.onQueue?.(draft)
+      const queued = await submitQueuedDraft({
+        client,
+        sync,
+        draft,
+      }).catch((err) => {
+        showToast({
+          title: language.t("prompt.toast.promptSendFailed.title"),
+          description: errorMessage(err),
+        })
+        return undefined
+      })
+      if (!queued) return
+      promptProbe.submit({ sessionID: session.id, directory: sessionDirectory })
+      input.onSubmit?.()
       clearContext()
       clearInput()
       return

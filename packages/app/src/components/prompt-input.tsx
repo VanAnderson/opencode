@@ -64,7 +64,6 @@ interface PromptInputProps {
   edit?: { id: string; prompt: Prompt; context: FollowupDraft["context"] }
   onEditLoaded?: () => void
   shouldQueue?: () => boolean
-  onQueue?: (draft: FollowupDraft) => void
   onAbort?: () => void
   onSubmit?: () => void
 }
@@ -1110,7 +1109,6 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     newSessionWorktree: () => props.newSessionWorktree,
     onNewSessionWorktreeReset: props.onNewSessionWorktreeReset,
     shouldQueue: props.shouldQueue,
-    onQueue: props.onQueue,
     onAbort: props.onAbort,
     onSubmit: props.onSubmit,
   })

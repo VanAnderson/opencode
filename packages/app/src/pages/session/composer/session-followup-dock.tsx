@@ -8,8 +8,8 @@ import { useLanguage } from "@/context/language"
 export function SessionFollowupDock(props: {
   items: { id: string; text: string }[]
   sending?: string
-  onSend: (id: string) => void
-  onEdit: (id: string) => void
+  onSend?: (id: string) => void
+  onEdit?: (id: string) => void
 }) {
   const language = useLanguage()
   const [store, setStore] = createStore({
@@ -85,20 +85,22 @@ export function SessionFollowupDock(props: {
                   size="small"
                   variant="secondary"
                   class="shrink-0"
-                  disabled={!!props.sending}
-                  onClick={() => props.onSend(item.id)}
+                  disabled={!!props.sending || !props.onSend}
+                  onClick={() => props.onSend?.(item.id)}
                 >
                   {language.t("session.followupDock.sendNow")}
                 </Button>
-                <Button
-                  size="small"
-                  variant="ghost"
-                  class="shrink-0"
-                  disabled={!!props.sending}
-                  onClick={() => props.onEdit(item.id)}
-                >
-                  {language.t("session.followupDock.edit")}
-                </Button>
+                <Show when={props.onEdit}>
+                  <Button
+                    size="small"
+                    variant="ghost"
+                    class="shrink-0"
+                    disabled={!!props.sending}
+                    onClick={() => props.onEdit?.(item.id)}
+                  >
+                    {language.t("session.followupDock.edit")}
+                  </Button>
+                </Show>
               </div>
             )}
           </For>

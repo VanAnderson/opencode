@@ -29,10 +29,9 @@ export function SessionComposerRegion(props: {
     items: { id: string; text: string }[]
     sending?: string
     edit?: { id: string; prompt: FollowupDraft["prompt"]; context: FollowupDraft["context"] }
-    onQueue: (draft: FollowupDraft) => void
-    onAbort: () => void
-    onSend: (id: string) => void
-    onEdit: (id: string) => void
+    onAbort?: () => void
+    onSend?: (id: string) => void
+    onEdit?: (id: string) => void
     onEditLoaded: () => void
   }
   revert?: {
@@ -239,7 +238,6 @@ export function SessionComposerRegion(props: {
                 edit={props.followup?.edit}
                 onEditLoaded={props.followup?.onEditLoaded}
                 shouldQueue={props.followup?.queue}
-                onQueue={props.followup?.onQueue}
                 onAbort={props.followup?.onAbort}
                 onSubmit={props.onSubmit}
               />
