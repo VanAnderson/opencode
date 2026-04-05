@@ -402,6 +402,44 @@ describe("prompt submit worktree selection", () => {
     expect(submitCount).toBe(1)
   })
 
+  test("allows explicit busy followup actions to override the default mode", async () => {
+    params = { id: "session-1" }
+
+    const submit = createPromptSubmit({
+      info: () => ({ id: "session-1" }),
+      imageAttachments: () => [],
+      commentCount: () => 0,
+      autoAccept: () => false,
+      mode: () => "normal",
+      working: () => true,
+      editor: () => undefined,
+      queueScroll: () => undefined,
+      promptLength: (value) => value.reduce((sum, part) => sum + ("content" in part ? part.content.length : 0), 0),
+      addToHistory: () => undefined,
+      resetHistoryNavigation: () => undefined,
+      setMode: () => undefined,
+      setPopover: () => undefined,
+      followupMode: () => "queue",
+      onSubmit: () => undefined,
+    })
+
+    const event = { preventDefault: () => undefined } as unknown as Event
+
+    await submit.handleSubmit(event, { followupMode: "steer" })
+
+    expect(submitted).toHaveLength(1)
+    expect(submitted[0]).toMatchObject({
+      directory: "/repo/main",
+      input: {
+        sessionID: "session-1",
+        mode: "steer",
+        source: "app",
+      },
+    })
+    expect(promptAsyncCalls).toEqual([])
+    expect(optimistic).toEqual([])
+  })
+
   test("uses the queue override when editing an existing pending item", async () => {
     params = { id: "session-1" }
     const queued: Array<{ pendingMessageID?: string; sessionID: string; mode: "queue" | "steer" }> = []
