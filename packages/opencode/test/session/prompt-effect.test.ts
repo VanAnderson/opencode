@@ -1321,6 +1321,110 @@ it.live(
 )
 
 it.live(
+  "steer while LLM is hanging interrupts the active run and blocks stale queued work",
+  () =>
+    provideTmpdirServer(
+      Effect.fnUntraced(function* ({ llm }) {
+        const prompt = yield* SessionPrompt.Service
+        const queue = yield* SessionQueue.Service
+        const sessions = yield* Session.Service
+        const chat = yield* sessions.create({ title: "Steer hanging run" })
+
+        yield* llm.hang
+        yield* llm.text("steered reply")
+        const active = yield* user(chat.id, "hello first")
+
+        const first = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.forkChild)
+        yield* llm.wait(1)
+
+        const stalePending = yield* queue.enqueue({
+          sessionID: chat.id,
+          mode: "queue",
+          payload: {
+            kind: "prompt",
+            agent: "build",
+            model: ref,
+            variant: "default",
+            parts: [{ type: "text", text: "hello stale" }],
+          },
+          source: "test",
+          createdAgainstExecutionID: active.id,
+        })
+        expect(stalePending.createdAgainstExecutionID).toBe(active.id)
+
+        const steerPending = yield* queue.enqueue({
+          sessionID: chat.id,
+          mode: "steer",
+          payload: {
+            kind: "prompt",
+            agent: "build",
+            model: ref,
+            variant: "default",
+            parts: [{ type: "text", text: "hello steer" }],
+          },
+          source: "test",
+          createdAgainstExecutionID: active.id,
+          supersedesExecutionID: active.id,
+        })
+        yield* queue.promote({
+          sessionID: chat.id,
+          pendingMessageID: steerPending.id,
+        })
+        expect(steerPending.mode).toBe("steer")
+        expect(steerPending.createdAgainstExecutionID).toBe(active.id)
+        expect(steerPending.supersedesExecutionID).toBe(active.id)
+
+        yield* prompt.cancel(chat.id)
+        yield* queue.markBlockedAfterInterrupt({
+          sessionID: chat.id,
+          createdAgainstExecutionID: active.id,
+          preserveLatestSteer: true,
+          excludePendingMessageIDs: [],
+        })
+        yield* prompt.runQueuedIfIdle(chat.id)
+
+        const firstExit = yield* Fiber.await(first)
+        expect(Exit.isSuccess(firstExit)).toBe(true)
+        if (Exit.isSuccess(firstExit) && firstExit.value.info.role === "assistant") {
+          expect(firstExit.value.info.error?.name).toBe("MessageAbortedError")
+        }
+
+        const result = yield* Effect.promise(async () => {
+          const end = Date.now() + 5000
+          while (Date.now() < end) {
+            const pending = await Effect.runPromise(queue.list(chat.id))
+            const msgs = await Effect.runPromise(sessions.messages({ sessionID: chat.id }))
+            const steerUser = msgs.find((msg): msg is MessageV2.WithParts & { info: MessageV2.User } => {
+              if (msg.info.role !== "user") return false
+              return msg.parts.some((part) => part.type === "text" && part.text === "hello steer")
+            })
+            const steerAssistant = msgs.find((msg): msg is MessageV2.WithParts & { info: MessageV2.Assistant } => {
+              if (msg.info.role !== "assistant") return false
+              return msg.parts.some((part) => part.type === "text" && part.text === "steered reply")
+            })
+            const blocked = pending.find((item) => item.id === stalePending.id)
+            if (steerUser && steerAssistant && blocked?.status === "blocked_after_interrupt") {
+              return { steerUser, blocked }
+            }
+            await new Promise((done) => setTimeout(done, 20))
+          }
+          throw new Error("timed out waiting for steer interruption results")
+        })
+
+        expect(result.steerUser.info.submission).toMatchObject({
+          mode: "steer",
+          createdFromPendingMessageID: steerPending.id,
+          supersedesExecutionID: active.id,
+        })
+        expect(result.blocked.createdAgainstExecutionID).toBe(active.id)
+        expect(yield* llm.calls).toBe(2)
+      }),
+      { git: true, config: providerCfg },
+    ),
+  10_000,
+)
+
+it.live(
   "queued prompt dispatch still executes downstream tool calls",
   () =>
     provideTmpdirServer(

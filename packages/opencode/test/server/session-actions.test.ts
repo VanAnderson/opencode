@@ -37,6 +37,23 @@ async function user(sessionID: SessionID, text: string) {
   return msg
 }
 
+async function activeAssistant(sessionID: SessionID, parentID: MessageID) {
+  return Session.updateMessage({
+    id: MessageID.ascending(),
+    role: "assistant",
+    sessionID,
+    parentID,
+    mode: "build",
+    agent: "build",
+    path: { cwd: "/", root: "/" },
+    cost: 0,
+    tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+    modelID: ModelID.make("test"),
+    providerID: ProviderID.make("test"),
+    time: { created: Date.now() },
+  })
+}
+
 function promptPayload(text: string) {
   return {
     kind: "prompt" as const,
@@ -64,6 +81,12 @@ function assistantResult(sessionID: SessionID) {
     },
     parts: [],
   } as unknown as MessageV2.WithParts
+}
+
+function pendingText(item: SessionQueue.PendingMessage) {
+  if (item.payload.kind === "command") return item.payload.arguments
+  const first = item.payload.parts[0]
+  return first?.type === "text" ? first.text : ""
 }
 
 describe("session action routes", () => {
@@ -418,9 +441,96 @@ describe("session action routes", () => {
         expect(block).toHaveBeenCalledWith({
           sessionID: session.id,
           createdAgainstExecutionID: active.id,
-          excludePendingMessageIDs: [body.pending.id],
+          preserveLatestSteer: true,
+          excludePendingMessageIDs: [],
         })
         expect(runQueuedIfIdle).toHaveBeenCalledWith(session.id)
+
+        await Session.remove(session.id)
+      },
+    })
+  })
+
+  test("submit route preserves only the newest steer when repeated interrupts settle", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const session = await Session.create({})
+        const app = Server.Default()
+        const current = await user(session.id, "active")
+        await activeAssistant(session.id, current.id)
+
+        const cancelDeferred = Promise.withResolvers<void>()
+        spyOn(SessionStatus, "get").mockResolvedValue({ type: "busy" })
+        const cancel = spyOn(SessionPrompt, "cancel").mockImplementation(() => cancelDeferred.promise)
+        const runQueuedIfIdle = spyOn(SessionPrompt, "runQueuedIfIdle").mockResolvedValue()
+
+        const existing = await SessionQueue.enqueue({
+          sessionID: session.id,
+          mode: "queue",
+          payload: promptPayload("existing"),
+          createdAgainstExecutionID: current.id,
+        })
+
+        const first = await app.request(`/session/${session.id}/submit`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            mode: "steer",
+            payload: promptPayload("urgent one"),
+            source: "app",
+          }),
+        })
+
+        const second = await app.request(`/session/${session.id}/submit`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            mode: "steer",
+            payload: promptPayload("urgent two"),
+            source: "app",
+          }),
+        })
+
+        expect(first.status).toBe(200)
+        expect(second.status).toBe(200)
+
+        cancelDeferred.resolve()
+        await new Promise((resolve) => setTimeout(resolve, 25))
+
+        const queue = await SessionQueue.list(session.id)
+        expect(queue.map((item) => ({
+          id: item.id,
+          mode: item.mode,
+          status: item.status,
+          text: pendingText(item),
+        }))).toEqual([
+          {
+            id: expect.any(String),
+            mode: "steer",
+            status: "queued",
+            text: "urgent two",
+          },
+          {
+            id: expect.any(String),
+            mode: "steer",
+            status: "blocked_after_interrupt",
+            text: "urgent one",
+          },
+          {
+            id: existing.id,
+            mode: "queue",
+            status: "blocked_after_interrupt",
+            text: "existing",
+          },
+        ])
+        expect(cancel).toHaveBeenCalledTimes(2)
+        expect(runQueuedIfIdle).toHaveBeenCalledTimes(2)
 
         await Session.remove(session.id)
       },

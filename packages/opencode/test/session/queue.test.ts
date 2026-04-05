@@ -202,6 +202,7 @@ describe("SessionQueue", () => {
           const blocked = await SessionQueue.markBlockedAfterInterrupt({
             sessionID: session.id,
             createdAgainstExecutionID: "run_1",
+            preserveLatestSteer: false,
             excludePendingMessageIDs: [second.id],
           })
 
@@ -213,6 +214,65 @@ describe("SessionQueue", () => {
           expect(list.find((item) => item.payload.kind === "prompt" && item.id !== first.id && item.id !== second.id)?.status).toBe(
             "queued",
           )
+        } finally {
+          await Session.remove(session.id)
+        }
+      },
+    })
+  })
+
+  test("preserves the latest steer when repeated interruptions target the same execution", async () => {
+    await Instance.provide({
+      directory: projectRoot,
+      fn: async () => {
+        const session = await Session.create({})
+
+        try {
+          const first = await SessionQueue.enqueue({
+            sessionID: session.id,
+            mode: "queue",
+            payload: promptPayload("first"),
+            createdAgainstExecutionID: "run_1",
+          })
+          const steerA = await SessionQueue.enqueue({
+            sessionID: session.id,
+            mode: "steer",
+            payload: promptPayload("steer-a"),
+            createdAgainstExecutionID: "run_1",
+            supersedesExecutionID: "run_1",
+          })
+          const steerB = await SessionQueue.enqueue({
+            sessionID: session.id,
+            mode: "steer",
+            payload: promptPayload("steer-b"),
+            createdAgainstExecutionID: "run_1",
+            supersedesExecutionID: "run_1",
+          })
+          await SessionQueue.promote({
+            sessionID: session.id,
+            pendingMessageID: steerB.id,
+          })
+          await SessionQueue.enqueue({
+            sessionID: session.id,
+            mode: "queue",
+            payload: promptPayload("future"),
+            createdAgainstExecutionID: "run_2",
+          })
+
+          const blocked = await SessionQueue.markBlockedAfterInterrupt({
+            sessionID: session.id,
+            createdAgainstExecutionID: "run_1",
+            preserveLatestSteer: true,
+            excludePendingMessageIDs: [],
+          })
+
+          expect(blocked.map((item) => item.id)).toEqual([first.id, steerA.id])
+
+          const list = await SessionQueue.list(session.id)
+          expect(list.find((item) => item.id === steerB.id)?.status).toBe("queued")
+          expect(list.find((item) => item.id === steerA.id)?.status).toBe("blocked_after_interrupt")
+          expect(list.find((item) => item.id === first.id)?.status).toBe("blocked_after_interrupt")
+          expect(list.find((item) => item.payload.kind === "prompt" && item.id !== first.id && item.id !== steerA.id && item.id !== steerB.id)?.status).toBe("queued")
         } finally {
           await Session.remove(session.id)
         }
