@@ -25,6 +25,27 @@ import { NamedError } from "@opencode-ai/util/error"
 
 const log = Log.create({ service: "server" })
 
+const SessionSubmitInput = z.object({
+  mode: SessionQueue.PendingMessageMode.optional().default("queue"),
+  payload: SessionQueue.PendingMessagePayload,
+  source: z.string().optional(),
+  createdAgainstExecutionID: z.string().optional(),
+  supersedesExecutionID: z.string().optional(),
+})
+
+const SessionSubmitResponse = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("immediate"),
+    message: MessageV2.WithParts,
+  }),
+  z.object({
+    kind: z.literal("queued"),
+    pending: SessionQueue.PendingMessage,
+    queue: SessionQueue.PendingMessage.array(),
+    status: SessionStatus.Info,
+  }),
+])
+
 export const SessionRoutes = lazy(() =>
   new Hono()
     .get(
@@ -187,6 +208,74 @@ export const SessionRoutes = lazy(() =>
         await Session.get(sessionID)
         const pending = await SessionQueue.list(sessionID)
         return c.json(pending)
+      },
+    )
+    .post(
+      "/:sessionID/submit",
+      describeRoute({
+        summary: "Submit session input",
+        description:
+          "Submit a prompt or command to a session. When the session is idle, the submission executes immediately through the existing prompt or command path. When the session is busy, the submission is persisted in the session queue and returned for later execution.",
+        operationId: "session.submit",
+        responses: {
+          200: {
+            description: "Immediate execution result or queued submission",
+            content: {
+              "application/json": {
+                schema: resolver(SessionSubmitResponse),
+              },
+            },
+          },
+          ...errors(400, 404),
+        },
+      }),
+      validator(
+        "param",
+        z.object({
+          sessionID: SessionID.zod,
+        }),
+      ),
+      validator("json", SessionSubmitInput),
+      async (c) => {
+        const sessionID = c.req.valid("param").sessionID
+        const body = c.req.valid("json")
+        await Session.get(sessionID)
+
+        const status = await SessionStatus.get(sessionID)
+        if (status.type !== "idle") {
+          const queued = await SessionQueue.enqueue({
+            sessionID,
+            mode: body.mode,
+            payload: body.payload,
+            source: body.source,
+            createdAgainstExecutionID: body.createdAgainstExecutionID,
+            supersedesExecutionID: body.supersedesExecutionID,
+          })
+          const pending =
+            body.mode === "steer"
+              ? await SessionQueue.promote({ sessionID, pendingMessageID: queued.id })
+              : queued
+          return c.json({
+            kind: "queued" as const,
+            pending,
+            queue: await SessionQueue.list(sessionID),
+            status,
+          })
+        }
+
+        if (body.payload.kind === "prompt") {
+          const message = await SessionPrompt.prompt({ ...body.payload, sessionID })
+          return c.json({
+            kind: "immediate" as const,
+            message,
+          })
+        }
+
+        const message = await SessionPrompt.command({ ...body.payload, sessionID })
+        return c.json({
+          kind: "immediate" as const,
+          message,
+        })
       },
     )
     .post(

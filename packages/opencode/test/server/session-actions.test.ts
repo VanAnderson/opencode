@@ -5,7 +5,9 @@ import { Session } from "../../src/session"
 import { SessionQueue } from "../../src/session/queue"
 import { ModelID, ProviderID } from "../../src/provider/schema"
 import { MessageID, PartID, type SessionID } from "../../src/session/schema"
+import { MessageV2 } from "../../src/session/message-v2"
 import { SessionPrompt } from "../../src/session/prompt"
+import { SessionStatus } from "../../src/session/status"
 import { Log } from "../../src/util/log"
 import { tmpdir } from "../fixture/fixture"
 
@@ -51,6 +53,17 @@ function promptPayload(text: string) {
       },
     ],
   }
+}
+
+function assistantResult(sessionID: SessionID) {
+  return {
+    info: {
+      id: MessageID.ascending(),
+      sessionID,
+      role: "assistant",
+    },
+    parts: [],
+  } as unknown as MessageV2.WithParts
 }
 
 describe("session action routes", () => {
@@ -148,6 +161,136 @@ describe("session action routes", () => {
         expect(removed.status).toBe(200)
         expect(await removed.json()).toBe(true)
         expect(await SessionQueue.list(session.id)).toEqual([])
+
+        await Session.remove(session.id)
+      },
+    })
+  })
+
+  test("submit route executes immediately when the session is idle", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const session = await Session.create({})
+        const app = Server.Default()
+        const prompt = spyOn(SessionPrompt, "prompt").mockResolvedValue(assistantResult(session.id))
+
+        const res = await app.request(`/session/${session.id}/submit`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            mode: "queue",
+            payload: promptPayload("ship it"),
+            source: "app",
+          }),
+        })
+
+        expect(res.status).toBe(200)
+        expect(await res.json()).toMatchObject({
+          kind: "immediate",
+          message: {
+            info: {
+              role: "assistant",
+              sessionID: session.id,
+            },
+          },
+        })
+        expect(prompt).toHaveBeenCalledWith({
+          ...promptPayload("ship it"),
+          sessionID: session.id,
+        })
+        expect(await SessionQueue.list(session.id)).toEqual([])
+
+        await Session.remove(session.id)
+      },
+    })
+  })
+
+  test("submit route queues follow-ups while the session is busy", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const session = await Session.create({})
+        const app = Server.Default()
+        const status = spyOn(SessionStatus, "get").mockResolvedValue({ type: "busy" })
+        const prompt = spyOn(SessionPrompt, "prompt")
+
+        const res = await app.request(`/session/${session.id}/submit`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            mode: "queue",
+            payload: promptPayload("next"),
+            source: "app",
+          }),
+        })
+
+        expect(res.status).toBe(200)
+        expect(await res.json()).toMatchObject({
+          kind: "queued",
+          pending: {
+            sessionID: session.id,
+            mode: "queue",
+            position: 0,
+          },
+          queue: [{ sessionID: session.id, mode: "queue", position: 0 }],
+          status: { type: "busy" },
+        })
+        expect(status).toHaveBeenCalledWith(session.id)
+        expect(prompt).not.toHaveBeenCalled()
+
+        await Session.remove(session.id)
+      },
+    })
+  })
+
+  test("submit route promotes steer submissions to the front while busy", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const session = await Session.create({})
+        const app = Server.Default()
+        spyOn(SessionStatus, "get").mockResolvedValue({ type: "busy" })
+
+        const existing = await SessionQueue.enqueue({
+          sessionID: session.id,
+          mode: "queue",
+          payload: promptPayload("existing"),
+        })
+
+        const res = await app.request(`/session/${session.id}/submit`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            mode: "steer",
+            payload: promptPayload("urgent"),
+            source: "app",
+          }),
+        })
+
+        expect(res.status).toBe(200)
+        expect(await res.json()).toMatchObject({
+          kind: "queued",
+          pending: {
+            sessionID: session.id,
+            mode: "steer",
+            position: 0,
+          },
+          queue: [
+            { sessionID: session.id, mode: "steer", position: 0 },
+            { id: existing.id, sessionID: session.id, mode: "queue", position: 1 },
+          ],
+          status: { type: "busy" },
+        })
 
         await Session.remove(session.id)
       },
