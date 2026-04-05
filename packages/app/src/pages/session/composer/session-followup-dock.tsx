@@ -11,8 +11,10 @@ export function SessionFollowupDock(props: {
     text: string
     meta?: string
     status?: string
+    resume?: boolean
     sendLabel?: string
     sendDisabled?: boolean
+    resumeDisabled?: boolean
     editDisabled?: boolean
     deleteDisabled?: boolean
     moveUpDisabled?: boolean
@@ -20,7 +22,9 @@ export function SessionFollowupDock(props: {
   }[]
   sending?: string
   clearing?: boolean
+  clearDisabled?: boolean
   onSend?: (id: string) => void
+  onResume?: (id: string) => void
   onEdit?: (id: string) => void
   onDelete?: (id: string) => void
   onMoveUp?: (id: string) => void
@@ -70,12 +74,12 @@ export function SessionFollowupDock(props: {
             <Button
               size="small"
               variant="ghost"
-              disabled={!!props.sending || props.clearing}
-              onMouseDown={(event) => {
+              disabled={!!props.sending || props.clearing || props.clearDisabled}
+              onMouseDown={(event: MouseEvent) => {
                 event.preventDefault()
                 event.stopPropagation()
               }}
-              onClick={(event) => {
+              onClick={(event: MouseEvent) => {
                 event.stopPropagation()
                 props.onClear?.()
               }}
@@ -129,7 +133,7 @@ export function SessionFollowupDock(props: {
                 <div class="shrink-0 flex items-center gap-1">
                   <Show when={props.onMoveUp}>
                     <IconButton
-                      icon="chevron-up"
+                      icon="arrow-up"
                       size="small"
                       variant="ghost"
                       disabled={!!props.sending || props.clearing || item.moveUpDisabled}
@@ -139,13 +143,25 @@ export function SessionFollowupDock(props: {
                   </Show>
                   <Show when={props.onMoveDown}>
                     <IconButton
-                      icon="chevron-down"
+                      icon="arrow-up"
                       size="small"
                       variant="ghost"
+                      style={{ transform: "rotate(180deg)" }}
                       disabled={!!props.sending || props.clearing || item.moveDownDisabled}
                       onClick={() => props.onMoveDown?.(item.id)}
                       aria-label={language.t("session.followupDock.moveDown")}
                     />
+                  </Show>
+                  <Show when={item.resume && props.onResume}>
+                    <Button
+                      size="small"
+                      variant="ghost"
+                      class="shrink-0"
+                      disabled={!!props.sending || props.clearing || item.resumeDisabled}
+                      onClick={() => props.onResume?.(item.id)}
+                    >
+                      {language.t("session.followupDock.resume")}
+                    </Button>
                   </Show>
                   <Button
                     size="small"

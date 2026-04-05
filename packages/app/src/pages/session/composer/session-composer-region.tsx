@@ -31,8 +31,10 @@ export function SessionComposerRegion(props: {
       text: string
       meta?: string
       status?: string
+      resume?: boolean
       sendLabel?: string
       sendDisabled?: boolean
+      resumeDisabled?: boolean
       editDisabled?: boolean
       deleteDisabled?: boolean
       moveUpDisabled?: boolean
@@ -40,6 +42,7 @@ export function SessionComposerRegion(props: {
     }[]
     sending?: string
     clearing?: boolean
+    clearDisabled?: boolean
     edit?: { id: string; prompt: FollowupDraft["prompt"]; context: FollowupDraft["context"] }
     onQueue?: (input: {
       draft: FollowupDraft
@@ -48,6 +51,7 @@ export function SessionComposerRegion(props: {
     }) => Promise<boolean> | boolean
     onAbort?: () => void
     onSend?: (id: string) => void
+    onResume?: (id: string) => void
     onEdit?: (id: string) => void
     onDelete?: (id: string) => void
     onMoveUp?: (id: string) => void
@@ -248,7 +252,9 @@ export function SessionComposerRegion(props: {
                   items={props.followup!.items}
                   sending={props.followup!.sending}
                   clearing={props.followup!.clearing}
+                  clearDisabled={props.followup!.clearDisabled}
                   onSend={props.followup!.onSend}
+                  onResume={props.followup!.onResume}
                   onEdit={props.followup!.onEdit}
                   onDelete={props.followup!.onDelete}
                   onMoveUp={props.followup!.onMoveUp}

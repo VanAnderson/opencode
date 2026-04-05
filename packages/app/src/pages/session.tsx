@@ -64,6 +64,7 @@ import {
   type FollowupDraft,
   pendingMessagePreview,
   pendingMessageToEdit,
+  reorderPendingMessageIDs,
   type FollowupEdit,
 } from "@/utils/session-queue"
 
@@ -1616,7 +1617,11 @@ export default function Page() {
   })
 
   const queueActionMutation = useMutation(() => ({
-    mutationFn: async (input: { sessionID: string; id: string; action: "send" | "delete" }) => {
+    mutationFn: async (input: {
+      sessionID: string
+      id: string
+      action: "send" | "delete" | "resume" | "moveUp" | "moveDown"
+    }) => {
       const pending = (sync.data.queue[input.sessionID] ?? []).find((item) => item.id === input.id)
       if (!pending) return
 
@@ -1624,6 +1629,28 @@ export default function Page() {
         await sdk.client.session.queueDelete({
           sessionID: input.sessionID,
           pendingMessageID: input.id,
+        })
+        return
+      }
+
+      if (input.action === "resume") {
+        await sdk.client.session.queueUpdate({
+          sessionID: input.sessionID,
+          pendingMessageID: input.id,
+          status: "queued",
+        })
+        return
+      }
+
+      if (input.action === "moveUp" || input.action === "moveDown") {
+        const items = (sync.data.queue[input.sessionID] ?? []).filter(
+          (item) => item.status !== "consumed" && item.status !== "canceled",
+        )
+        const next = reorderPendingMessageIDs(items, input.id, input.action === "moveUp" ? "up" : "down")
+        if (!next) return
+        await sdk.client.session.queueReorder({
+          sessionID: input.sessionID,
+          pendingMessageIDs: next,
         })
         return
       }
@@ -1650,8 +1677,24 @@ export default function Page() {
     onError: fail,
   }))
 
+  const queueClearMutation = useMutation(() => ({
+    mutationFn: async (sessionID: string) => {
+      await sdk.client.session.queueClear({ sessionID })
+    },
+    onSuccess: () => {
+      setFollowup("edit", undefined)
+    },
+    onError: fail,
+  }))
+
   const followupBusy = (sessionID: string) =>
     queueActionMutation.isPending && queueActionMutation.variables?.sessionID === sessionID
+
+  const followupClearing = (sessionID: string) => queueClearMutation.isPending && queueClearMutation.variables === sessionID
+
+  const followupLocked = (sessionID: string) => followupBusy(sessionID) || followupClearing(sessionID)
+  const followupHasRunningItem = (sessionID: string) =>
+    (sync.data.queue[sessionID] ?? emptyPendingMessages).some((item) => item.status === "running")
 
   const sendingFollowup = createMemo(() => {
     const id = params.id
@@ -1667,6 +1710,11 @@ export default function Page() {
     return settings.general.followup()
   })
 
+  const followupAttachmentCount = (item: PendingMessage) => {
+    if (item.payload.kind === "command") return item.payload.parts?.length ?? 0
+    return (item.payload.parts ?? []).filter((part) => part.type === "file" && part.url.startsWith("data:")).length
+  }
+
   const followupMeta = (item: PendingMessage) => {
     const created = new Date(item.time.created).toLocaleTimeString([], {
       hour: "numeric",
@@ -1679,23 +1727,38 @@ export default function Page() {
         : item.payload.model
           ? `${item.payload.model.providerID}/${item.payload.model.modelID}`
           : undefined
-    return [created, agent, model].filter(Boolean).join(" • ")
+    const attachments = followupAttachmentCount(item)
+    const attachmentMeta = attachments
+      ? language.t(
+          attachments === 1
+            ? "session.followupDock.attachment.one"
+            : "session.followupDock.attachment.other",
+          {
+            count: attachments,
+          },
+        )
+      : undefined
+    return [created, agent, model, attachmentMeta].filter(Boolean).join(" • ")
   }
 
   const followupStatus = (item: PendingMessage) => item.status.replaceAll("_", " ")
 
-  const followupDock = createMemo(() =>
-    queuedFollowups().map((item) => ({
+  const followupDock = createMemo(() => {
+    const items = queuedFollowups()
+    return items.map((item, index) => ({
       id: item.id,
       text: pendingMessagePreview(item),
       meta: followupMeta(item),
       status: followupStatus(item),
-      sendLabel: item.status === "blocked_after_interrupt" ? language.t("common.continue") : undefined,
+      resume: item.status === "blocked_after_interrupt",
       sendDisabled: item.status === "running",
+      resumeDisabled: item.status !== "blocked_after_interrupt",
       editDisabled: item.status === "running",
       deleteDisabled: item.status === "running",
-    })),
-  )
+      moveUpDisabled: item.status === "running" || followupHasRunningItem(params.id!) || index === 0,
+      moveDownDisabled: item.status === "running" || followupHasRunningItem(params.id!) || index === items.length - 1,
+    }))
+  })
 
   const queueFollowup = async (draft: FollowupDraft, pendingMessageID?: string, mode: "queue" | "steer" = "queue") => {
     try {
@@ -1734,13 +1797,28 @@ export default function Page() {
   }
 
   const sendFollowup = (sessionID: string, id: string) => {
-    if (followupBusy(sessionID)) return Promise.resolve()
+    if (followupLocked(sessionID)) return Promise.resolve()
     return queueActionMutation.mutateAsync({ sessionID, id, action: "send" })
   }
 
   const deleteFollowup = (sessionID: string, id: string) => {
-    if (followupBusy(sessionID)) return Promise.resolve()
+    if (followupLocked(sessionID)) return Promise.resolve()
     return queueActionMutation.mutateAsync({ sessionID, id, action: "delete" })
+  }
+
+  const resumeFollowup = (sessionID: string, id: string) => {
+    if (followupLocked(sessionID)) return Promise.resolve()
+    return queueActionMutation.mutateAsync({ sessionID, id, action: "resume" })
+  }
+
+  const moveFollowup = (sessionID: string, id: string, action: "moveUp" | "moveDown") => {
+    if (followupLocked(sessionID) || followupHasRunningItem(sessionID)) return Promise.resolve()
+    return queueActionMutation.mutateAsync({ sessionID, id, action })
+  }
+
+  const clearFollowups = (sessionID: string) => {
+    if (followupLocked(sessionID) || followupHasRunningItem(sessionID)) return Promise.resolve()
+    return queueClearMutation.mutateAsync(sessionID)
   }
 
   const editFollowup = (id: string) => {
@@ -2020,13 +2098,27 @@ export default function Page() {
                     mode: followupMode,
                     items: followupDock(),
                     sending: sendingFollowup(),
+                    clearing: followupClearing(params.id),
+                    clearDisabled: followupHasRunningItem(params.id),
                     edit: editingFollowup(),
                     onEdit: editFollowup,
                     onDelete: (id) => {
                       void deleteFollowup(params.id!, id)
                     },
+                    onMoveUp: (id) => {
+                      void moveFollowup(params.id!, id, "moveUp")
+                    },
+                    onMoveDown: (id) => {
+                      void moveFollowup(params.id!, id, "moveDown")
+                    },
+                    onClear: () => {
+                      void clearFollowups(params.id!)
+                    },
                     onSend: (id) => {
                       void sendFollowup(params.id!, id)
+                    },
+                    onResume: (id) => {
+                      void resumeFollowup(params.id!, id)
                     },
                     onQueue: ({ draft, pendingMessageID, mode }) => queueFollowup(draft, pendingMessageID, mode),
                   }

@@ -224,3 +224,19 @@ export function pendingMessageToEdit(pending: PendingMessage, sessionDirectory: 
     context: promptContext(pending.payload, sessionDirectory),
   }
 }
+
+export function reorderPendingMessageIDs(
+  pending: Pick<PendingMessage, "id">[],
+  pendingMessageID: string,
+  direction: "up" | "down",
+) {
+  const index = pending.findIndex((item) => item.id === pendingMessageID)
+  if (index === -1) return
+
+  const nextIndex = direction === "up" ? index - 1 : index + 1
+  if (nextIndex < 0 || nextIndex >= pending.length) return
+
+  const next = pending.map((item) => item.id)
+  ;[next[index], next[nextIndex]] = [next[nextIndex], next[index]]
+  return next
+}
