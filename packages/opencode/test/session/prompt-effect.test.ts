@@ -2290,6 +2290,112 @@ it.live(
 )
 
 it.live(
+  "queued submission reminders keep the continuation wording during an active run",
+  () =>
+    provideTmpdirServer(
+      Effect.fnUntraced(function* ({ llm }) {
+        const gate = defer<void>()
+        const prompt = yield* SessionPrompt.Service
+        const chat = yield* (yield* Session.Service).create({ title: "Queued reminder" })
+
+        yield* llm.pushMatch(
+          (hit) => JSON.stringify(hit.body).includes("\"first\""),
+          reply().wait(gate.promise).text("first").stop().item(),
+        )
+        yield* llm.textMatch((hit) => JSON.stringify(hit.body).includes("\"second\""), "second")
+
+        const first = yield* prompt
+          .prompt({
+            sessionID: chat.id,
+            agent: "build",
+            model: ref,
+            parts: [{ type: "text", text: "first" }],
+          })
+          .pipe(Effect.forkChild)
+
+        yield* llm.wait(1)
+
+        const second = yield* prompt
+          .prompt({
+            sessionID: chat.id,
+            agent: "build",
+            model: ref,
+            submission: { mode: "queue", source: "test" },
+            parts: [{ type: "text", text: "second" }],
+          })
+          .pipe(Effect.forkChild)
+
+        gate.resolve()
+
+        const [firstExit, secondExit] = yield* Effect.all([Fiber.await(first), Fiber.await(second)])
+        expect(Exit.isSuccess(firstExit)).toBe(true)
+        expect(Exit.isSuccess(secondExit)).toBe(true)
+
+        const inputs = yield* llm.inputs
+        const secondInput = JSON.stringify(inputs.at(-1)?.messages)
+        expect(secondInput).toContain("The user sent the following message:")
+        expect(secondInput).toContain("Please address this message and continue with your tasks.")
+        expect(secondInput).not.toContain("This message supersedes the previous in-flight work.")
+      }),
+      { git: true, config: providerCfg },
+    ),
+  3_000,
+)
+
+it.live(
+  "steer submission reminders use the stronger interruption wording during an active run",
+  () =>
+    provideTmpdirServer(
+      Effect.fnUntraced(function* ({ llm }) {
+        const gate = defer<void>()
+        const prompt = yield* SessionPrompt.Service
+        const chat = yield* (yield* Session.Service).create({ title: "Steer reminder" })
+
+        yield* llm.pushMatch(
+          (hit) => JSON.stringify(hit.body).includes("\"first\""),
+          reply().wait(gate.promise).text("first").stop().item(),
+        )
+        yield* llm.textMatch((hit) => JSON.stringify(hit.body).includes("\"second\""), "second")
+
+        const first = yield* prompt
+          .prompt({
+            sessionID: chat.id,
+            agent: "build",
+            model: ref,
+            parts: [{ type: "text", text: "first" }],
+          })
+          .pipe(Effect.forkChild)
+
+        yield* llm.wait(1)
+
+        const second = yield* prompt
+          .prompt({
+            sessionID: chat.id,
+            agent: "build",
+            model: ref,
+            submission: { mode: "steer", source: "test", supersedesExecutionID: "run_1" },
+            parts: [{ type: "text", text: "second" }],
+          })
+          .pipe(Effect.forkChild)
+
+        gate.resolve()
+
+        const [firstExit, secondExit] = yield* Effect.all([Fiber.await(first), Fiber.await(second)])
+        expect(Exit.isSuccess(firstExit)).toBe(true)
+        expect(Exit.isSuccess(secondExit)).toBe(true)
+
+        const inputs = yield* llm.inputs
+        const secondInput = JSON.stringify(inputs.at(-1)?.messages)
+        expect(secondInput).toContain("The user interrupted the previous work with the following message:")
+        expect(secondInput).toContain("This message supersedes the previous in-flight work.")
+        expect(secondInput).not.toContain("Please address this message and continue with your tasks.")
+      }),
+      { git: true, config: providerCfg },
+    ),
+  3_000,
+)
+
+it.live(
   "assertNotBusy throws BusyError when loop running",
   () =>
     provideTmpdirServer(
