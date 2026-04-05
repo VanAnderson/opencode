@@ -377,7 +377,7 @@ describe("session action routes", () => {
         const active = await user(session.id, "active work")
         const app = Server.Default()
         spyOn(SessionStatus, "get").mockResolvedValue({ type: "busy" })
-        const cancel = spyOn(SessionPrompt, "cancel").mockResolvedValue()
+        const interrupt = spyOn(SessionPrompt, "interrupt").mockResolvedValue()
         const block = spyOn(SessionQueue, "markBlockedAfterInterrupt").mockResolvedValue([])
         const runQueuedIfIdle = spyOn(SessionPrompt, "runQueuedIfIdle").mockResolvedValue()
 
@@ -437,7 +437,7 @@ describe("session action routes", () => {
 
         await new Promise((resolve) => setTimeout(resolve, 0))
 
-        expect(cancel).toHaveBeenCalledWith(session.id)
+        expect(interrupt).toHaveBeenCalledWith({ sessionID: session.id, holdQueuedDispatch: true })
         expect(block).toHaveBeenCalledWith({
           sessionID: session.id,
           createdAgainstExecutionID: active.id,
@@ -463,7 +463,7 @@ describe("session action routes", () => {
 
         const cancelDeferred = Promise.withResolvers<void>()
         spyOn(SessionStatus, "get").mockResolvedValue({ type: "busy" })
-        const cancel = spyOn(SessionPrompt, "cancel").mockImplementation(() => cancelDeferred.promise)
+        const interrupt = spyOn(SessionPrompt, "interrupt").mockImplementation(() => cancelDeferred.promise)
         const runQueuedIfIdle = spyOn(SessionPrompt, "runQueuedIfIdle").mockResolvedValue()
 
         const existing = await SessionQueue.enqueue({
@@ -529,7 +529,7 @@ describe("session action routes", () => {
             text: "existing",
           },
         ])
-        expect(cancel).toHaveBeenCalledTimes(2)
+        expect(interrupt).toHaveBeenCalledTimes(2)
         expect(runQueuedIfIdle).toHaveBeenCalledTimes(2)
 
         await Session.remove(session.id)

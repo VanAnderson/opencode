@@ -16,6 +16,7 @@ import { Provider as ProviderSvc } from "../../src/provider/provider"
 import type { Provider } from "../../src/provider/provider"
 import { ModelID, ProviderID } from "../../src/provider/schema"
 import { Question } from "../../src/question"
+import { Server } from "../../src/server/server"
 import { Todo } from "../../src/session/todo"
 import { Session } from "../../src/session"
 import { LLM } from "../../src/session/llm"
@@ -1265,8 +1266,11 @@ it.live(
         const chat = yield* sessions.create({ title: "Steer submission provenance" })
         const firstGate = defer<void>()
 
-        yield* llm.hold("first reply", firstGate.promise)
-        yield* llm.text("second reply")
+        yield* llm.pushMatch(
+          (hit) => JSON.stringify(hit.body).includes("hello first"),
+          reply().wait(firstGate.promise).text("first reply").stop().item(),
+        )
+        yield* llm.textMatch((hit) => JSON.stringify(hit.body).includes("hello steer"), "second reply")
         yield* user(chat.id, "hello first")
 
         const first = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.forkChild)
@@ -1324,21 +1328,36 @@ it.live(
   "steer while LLM is hanging interrupts the active run and blocks stale queued work",
   () =>
     provideTmpdirServer(
-      Effect.fnUntraced(function* ({ llm }) {
-        const prompt = yield* SessionPrompt.Service
-        const queue = yield* SessionQueue.Service
-        const sessions = yield* Session.Service
-        const chat = yield* sessions.create({ title: "Steer hanging run" })
+      Effect.fnUntraced(function* ({ dir, llm }) {
+        const chat = yield* Effect.promise(() => Session.create({ title: "Steer hanging run" }))
+        const app = Server.Default()
 
-        yield* llm.hang
-        yield* llm.text("steered reply")
+        const submit = (body: {
+          mode: "queue" | "steer"
+          payload: SessionQueue.PendingMessagePayload
+          source: string
+        }) =>
+          Effect.promise(() =>
+            Promise.resolve(
+              app.request(`/session/${chat.id}/submit`, {
+                method: "POST",
+                headers: {
+                  "content-type": "application/json",
+                  "x-opencode-directory": dir,
+                },
+                body: JSON.stringify(body),
+              }),
+            ),
+          )
+
+        yield* llm.pushMatch((hit) => JSON.stringify(hit.body).includes("hello first"), reply().hang().item())
+        yield* llm.textMatch((hit) => JSON.stringify(hit.body).includes("hello steer"), "steered reply")
         const active = yield* user(chat.id, "hello first")
 
-        const first = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.forkChild)
+        const first = yield* Effect.promise(() => SessionPrompt.loop({ sessionID: chat.id })).pipe(Effect.forkChild)
         yield* llm.wait(1)
 
-        const stalePending = yield* queue.enqueue({
-          sessionID: chat.id,
+        const staleRes = yield* submit({
           mode: "queue",
           payload: {
             kind: "prompt",
@@ -1348,12 +1367,15 @@ it.live(
             parts: [{ type: "text", text: "hello stale" }],
           },
           source: "test",
-          createdAgainstExecutionID: active.id,
         })
-        expect(stalePending.createdAgainstExecutionID).toBe(active.id)
+        expect(staleRes.status).toBe(200)
+        const staleBody = (yield* Effect.promise(() => staleRes.json())) as {
+          kind: "queued"
+          pending: SessionQueue.PendingMessage
+        }
+        expect(staleBody.pending.createdAgainstExecutionID).toBe(active.id)
 
-        const steerPending = yield* queue.enqueue({
-          sessionID: chat.id,
+        const steerRes = yield* submit({
           mode: "steer",
           payload: {
             kind: "prompt",
@@ -1363,25 +1385,15 @@ it.live(
             parts: [{ type: "text", text: "hello steer" }],
           },
           source: "test",
-          createdAgainstExecutionID: active.id,
-          supersedesExecutionID: active.id,
         })
-        yield* queue.promote({
-          sessionID: chat.id,
-          pendingMessageID: steerPending.id,
-        })
-        expect(steerPending.mode).toBe("steer")
-        expect(steerPending.createdAgainstExecutionID).toBe(active.id)
-        expect(steerPending.supersedesExecutionID).toBe(active.id)
-
-        yield* prompt.cancel(chat.id)
-        yield* queue.markBlockedAfterInterrupt({
-          sessionID: chat.id,
-          createdAgainstExecutionID: active.id,
-          preserveLatestSteer: true,
-          excludePendingMessageIDs: [],
-        })
-        yield* prompt.runQueuedIfIdle(chat.id)
+        expect(steerRes.status).toBe(200)
+        const steerBody = (yield* Effect.promise(() => steerRes.json())) as {
+          kind: "queued"
+          pending: SessionQueue.PendingMessage
+        }
+        expect(steerBody.pending.mode).toBe("steer")
+        expect(steerBody.pending.createdAgainstExecutionID).toBe(active.id)
+        expect(steerBody.pending.supersedesExecutionID).toBe(active.id)
 
         const firstExit = yield* Fiber.await(first)
         expect(Exit.isSuccess(firstExit)).toBe(true)
@@ -1392,8 +1404,8 @@ it.live(
         const result = yield* Effect.promise(async () => {
           const end = Date.now() + 5000
           while (Date.now() < end) {
-            const pending = await Effect.runPromise(queue.list(chat.id))
-            const msgs = await Effect.runPromise(sessions.messages({ sessionID: chat.id }))
+            const pending = await SessionQueue.list(chat.id)
+            const msgs = await Session.messages({ sessionID: chat.id })
             const steerUser = msgs.find((msg): msg is MessageV2.WithParts & { info: MessageV2.User } => {
               if (msg.info.role !== "user") return false
               return msg.parts.some((part) => part.type === "text" && part.text === "hello steer")
@@ -1402,18 +1414,45 @@ it.live(
               if (msg.info.role !== "assistant") return false
               return msg.parts.some((part) => part.type === "text" && part.text === "steered reply")
             })
-            const blocked = pending.find((item) => item.id === stalePending.id)
+            const blocked = pending.find((item) => item.id === staleBody.pending.id)
             if (steerUser && steerAssistant && blocked?.status === "blocked_after_interrupt") {
               return { steerUser, blocked }
             }
             await new Promise((done) => setTimeout(done, 20))
           }
-          throw new Error("timed out waiting for steer interruption results")
+          const pending = await SessionQueue.list(chat.id)
+          const msgs = await Session.messages({ sessionID: chat.id })
+          throw new Error(
+            JSON.stringify({
+              pending: pending.map((item) => ({
+                id: item.id,
+                mode: item.mode,
+                status: item.status,
+                against: item.createdAgainstExecutionID,
+                supersedes: item.supersedesExecutionID,
+                text:
+                  item.payload.kind === "prompt" && item.payload.parts[0]?.type === "text"
+                    ? item.payload.parts[0].text
+                    : item.payload.kind === "command"
+                      ? item.payload.arguments
+                      : "",
+              })),
+              messages: msgs.map((msg) => ({
+                role: msg.info.role,
+                id: msg.info.id,
+                parentID: msg.info.role === "assistant" ? msg.info.parentID : undefined,
+                error: msg.info.role === "assistant" ? msg.info.error?.name : undefined,
+                text: msg.parts
+                  .filter((part): part is MessageV2.TextPart => part.type === "text")
+                  .map((part) => part.text),
+              })),
+            }),
+          )
         })
 
         expect(result.steerUser.info.submission).toMatchObject({
           mode: "steer",
-          createdFromPendingMessageID: steerPending.id,
+          createdFromPendingMessageID: steerBody.pending.id,
           supersedesExecutionID: active.id,
         })
         expect(result.blocked.createdAgainstExecutionID).toBe(active.id)
@@ -1422,6 +1461,141 @@ it.live(
       { git: true, config: providerCfg },
     ),
   10_000,
+)
+
+unix(
+  "steer while a shell tool is running interrupts the tool and blocks stale queued work",
+  () =>
+    withSh(() =>
+      provideTmpdirServer(
+        Effect.fnUntraced(function* ({ dir, llm }) {
+          const chat = yield* Effect.promise(() => Session.create({ title: "Steer running tool" }))
+          const app = Server.Default()
+
+          const submit = (body: {
+            mode: "queue" | "steer"
+            payload: SessionQueue.PendingMessagePayload
+            source: string
+          }) =>
+            Effect.promise(() =>
+              Promise.resolve(
+                app.request(`/session/${chat.id}/submit`, {
+                  method: "POST",
+                  headers: {
+                    "content-type": "application/json",
+                    "x-opencode-directory": dir,
+                  },
+                  body: JSON.stringify(body),
+                }),
+              ),
+            )
+
+          yield* llm.textMatch((hit) => JSON.stringify(hit.body).includes("hello steer shell"), "steered shell reply")
+
+          const shell = yield* Effect.promise(() =>
+            SessionPrompt.shell({ sessionID: chat.id, agent: "build", command: "sleep 30" }),
+          ).pipe(Effect.forkChild)
+
+          const active = yield* Effect.promise(async () => {
+            const end = Date.now() + 5000
+            while (Date.now() < end) {
+              const msgs = await Session.messages({ sessionID: chat.id })
+              const activeUser = msgs.find((msg): msg is MessageV2.WithParts & { info: MessageV2.User } => {
+                if (msg.info.role !== "user") return false
+                return msg.parts.some(
+                  (part) => part.type === "text" && part.text === "The following tool was executed by the user",
+                )
+              })
+              const activeAssistant = msgs.find(
+                (msg): msg is MessageV2.WithParts & { info: MessageV2.Assistant } =>
+                  msg.info.role === "assistant" && msg.parts.some((part) => part.type === "tool"),
+              )
+              const tool = activeAssistant ? toolPart(activeAssistant.parts) : undefined
+              if (activeUser && tool?.state.status === "running") return activeUser
+              await new Promise((done) => setTimeout(done, 20))
+            }
+            throw new Error("timed out waiting for running shell tool")
+          })
+
+          const staleRes = yield* submit({
+            mode: "queue",
+            payload: {
+              kind: "prompt",
+              agent: "build",
+              model: ref,
+              variant: "default",
+              parts: [{ type: "text", text: "hello stale shell" }],
+            },
+            source: "test",
+          })
+          expect(staleRes.status).toBe(200)
+          const staleBody = (yield* Effect.promise(() => staleRes.json())) as {
+            kind: "queued"
+            pending: SessionQueue.PendingMessage
+          }
+          expect(staleBody.pending.createdAgainstExecutionID).toBe(active.info.id)
+
+          const steerRes = yield* submit({
+            mode: "steer",
+            payload: {
+              kind: "prompt",
+              agent: "build",
+              model: ref,
+              variant: "default",
+              parts: [{ type: "text", text: "hello steer shell" }],
+            },
+            source: "test",
+          })
+          expect(steerRes.status).toBe(200)
+          const steerBody = (yield* Effect.promise(() => steerRes.json())) as {
+            kind: "queued"
+            pending: SessionQueue.PendingMessage
+          }
+          expect(steerBody.pending.mode).toBe("steer")
+          expect(steerBody.pending.createdAgainstExecutionID).toBe(active.info.id)
+          expect(steerBody.pending.supersedesExecutionID).toBe(active.info.id)
+
+          const shellExit = yield* Fiber.await(shell)
+          expect(Exit.isSuccess(shellExit)).toBe(true)
+          if (Exit.isSuccess(shellExit)) {
+            const tool = completedTool(shellExit.value.parts)
+            if (tool) expect(tool.state.output).toContain("User aborted the command")
+          }
+
+          const result = yield* Effect.promise(async () => {
+            const end = Date.now() + 5000
+            while (Date.now() < end) {
+              const pending = await SessionQueue.list(chat.id)
+              const msgs = await Session.messages({ sessionID: chat.id })
+              const steerUser = msgs.find((msg): msg is MessageV2.WithParts & { info: MessageV2.User } => {
+                if (msg.info.role !== "user") return false
+                return msg.parts.some((part) => part.type === "text" && part.text === "hello steer shell")
+              })
+              const steerAssistant = msgs.find((msg): msg is MessageV2.WithParts & { info: MessageV2.Assistant } => {
+                if (msg.info.role !== "assistant") return false
+                return msg.parts.some((part) => part.type === "text" && part.text === "steered shell reply")
+              })
+              const blocked = pending.find((item) => item.id === staleBody.pending.id)
+              if (steerUser && steerAssistant && blocked?.status === "blocked_after_interrupt") {
+                return { steerUser, blocked }
+              }
+              await new Promise((done) => setTimeout(done, 20))
+            }
+            throw new Error("timed out waiting for steer shell interruption results")
+          })
+
+          expect(result.steerUser.info.submission).toMatchObject({
+            mode: "steer",
+            createdFromPendingMessageID: steerBody.pending.id,
+            supersedesExecutionID: active.info.id,
+          })
+          expect(result.blocked.createdAgainstExecutionID).toBe(active.info.id)
+          expect(yield* llm.calls).toBe(1)
+        }),
+        { git: true, config: providerCfg },
+      ),
+    ),
+  30_000,
 )
 
 it.live(
