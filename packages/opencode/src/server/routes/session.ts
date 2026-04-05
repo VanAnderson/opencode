@@ -269,7 +269,7 @@ export const SessionRoutes = lazy(() =>
               ? await SessionQueue.promote({ sessionID, pendingMessageID: queued.id })
               : queued
           if (body.mode === "steer") {
-            void SessionPrompt.cancel(sessionID)
+            void SessionPrompt.interrupt({ sessionID, holdQueuedDispatch: true })
               .then(async () => {
                 if (executionID) {
                   await SessionQueue.markBlockedAfterInterrupt({

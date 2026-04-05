@@ -72,6 +72,7 @@ export namespace SessionPrompt {
   export interface Interface {
     readonly assertNotBusy: (sessionID: SessionID) => Effect.Effect<void, Session.BusyError>
     readonly cancel: (sessionID: SessionID) => Effect.Effect<void>
+    readonly interrupt: (input: { sessionID: SessionID; holdQueuedDispatch?: boolean }) => Effect.Effect<void>
     readonly runQueuedIfIdle: (sessionID: SessionID) => Effect.Effect<void>
     readonly prompt: (input: SessionPromptInput.PromptInput) => Effect.Effect<MessageV2.WithParts>
     readonly loop: (input: SessionPromptInput.LoopInput) => Effect.Effect<MessageV2.WithParts>
@@ -111,15 +112,17 @@ export namespace SessionPrompt {
           const runners = new Map<string, Runner<MessageV2.WithParts>>()
           const dispatching = new Set<SessionID>()
           const redispatch = new Set<SessionID>()
+          const holdQueuedDispatch = new Set<SessionID>()
           yield* Effect.addFinalizer(
             Effect.fnUntraced(function* () {
               yield* Effect.forEach(runners.values(), (r) => r.cancel, { concurrency: "unbounded", discard: true })
               runners.clear()
               dispatching.clear()
               redispatch.clear()
+              holdQueuedDispatch.clear()
             }),
           )
-          return { runners, dispatching, redispatch }
+          return { runners, dispatching, redispatch, holdQueuedDispatch }
         }),
       )
 
@@ -237,8 +240,10 @@ export namespace SessionPrompt {
         if (existing) return existing
         const runner = Runner.make<MessageV2.WithParts>(scope, {
           onIdle: Effect.gen(function* () {
+            const s = yield* InstanceState.get(state)
             runners.delete(sessionID)
             yield* status.set(sessionID, { type: "idle" })
+            if (s.holdQueuedDispatch.delete(sessionID)) return
             yield* runQueuedIfIdle(sessionID).pipe(
               Effect.catchCause((cause) =>
                 Effect.sync(() =>
@@ -267,11 +272,20 @@ export namespace SessionPrompt {
       })
 
       const cancel = Effect.fn("SessionPrompt.cancel")(function* (sessionID: SessionID) {
-        log.info("cancel", { sessionID })
+        yield* interrupt({ sessionID })
+      })
+
+      const interrupt = Effect.fn("SessionPrompt.interrupt")(function* (input: {
+        sessionID: SessionID
+        holdQueuedDispatch?: boolean
+      }) {
+        log.info("cancel", { sessionID: input.sessionID, holdQueuedDispatch: input.holdQueuedDispatch })
         const s = yield* InstanceState.get(state)
-        const runner = s.runners.get(sessionID)
+        if (input.holdQueuedDispatch) s.holdQueuedDispatch.add(input.sessionID)
+        const runner = s.runners.get(input.sessionID)
         if (!runner || !runner.busy) {
-          yield* status.set(sessionID, { type: "idle" })
+          s.holdQueuedDispatch.delete(input.sessionID)
+          yield* status.set(input.sessionID, { type: "idle" })
           return
         }
         yield* runner.cancel
@@ -1840,6 +1854,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       return Service.of({
         assertNotBusy,
         cancel,
+        interrupt,
         runQueuedIfIdle,
         prompt,
         loop,
@@ -1894,6 +1909,15 @@ NOTE: At any point in time through this workflow you should feel free to ask the
 
   export async function cancel(sessionID: SessionID) {
     return runPromise((svc) => svc.cancel(SessionID.zod.parse(sessionID)))
+  }
+
+  export async function interrupt(input: { sessionID: SessionID; holdQueuedDispatch?: boolean }) {
+    return runPromise((svc) =>
+      svc.interrupt({
+        sessionID: SessionID.zod.parse(input.sessionID),
+        holdQueuedDispatch: z.boolean().optional().parse(input.holdQueuedDispatch),
+      }),
+    )
   }
 
   export async function runQueuedIfIdle(sessionID: SessionID) {
