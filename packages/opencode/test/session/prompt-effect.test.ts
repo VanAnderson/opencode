@@ -1350,6 +1350,7 @@ it.live(
             ),
           )
 
+        yield* llm.reset
         yield* llm.pushMatch((hit) => JSON.stringify(hit.body).includes("hello first"), reply().hang().item())
         yield* llm.textMatch((hit) => JSON.stringify(hit.body).includes("hello steer"), "steered reply")
         const active = yield* user(chat.id, "hello first")
@@ -1420,34 +1421,7 @@ it.live(
             }
             await new Promise((done) => setTimeout(done, 20))
           }
-          const pending = await SessionQueue.list(chat.id)
-          const msgs = await Session.messages({ sessionID: chat.id })
-          throw new Error(
-            JSON.stringify({
-              pending: pending.map((item) => ({
-                id: item.id,
-                mode: item.mode,
-                status: item.status,
-                against: item.createdAgainstExecutionID,
-                supersedes: item.supersedesExecutionID,
-                text:
-                  item.payload.kind === "prompt" && item.payload.parts[0]?.type === "text"
-                    ? item.payload.parts[0].text
-                    : item.payload.kind === "command"
-                      ? item.payload.arguments
-                      : "",
-              })),
-              messages: msgs.map((msg) => ({
-                role: msg.info.role,
-                id: msg.info.id,
-                parentID: msg.info.role === "assistant" ? msg.info.parentID : undefined,
-                error: msg.info.role === "assistant" ? msg.info.error?.name : undefined,
-                text: msg.parts
-                  .filter((part): part is MessageV2.TextPart => part.type === "text")
-                  .map((part) => part.text),
-              })),
-            }),
-          )
+          throw new Error("timed out waiting for steer interruption results")
         })
 
         expect(result.steerUser.info.submission).toMatchObject({
@@ -1490,6 +1464,7 @@ unix(
               ),
             )
 
+          yield* llm.reset
           yield* llm.textMatch((hit) => JSON.stringify(hit.body).includes("hello steer shell"), "steered shell reply")
 
           const shell = yield* Effect.promise(() =>
