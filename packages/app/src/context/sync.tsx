@@ -184,6 +184,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
     const historyMessagePageSize = 200
     const inflight = new Map<string, Promise<void>>()
     const inflightDiff = new Map<string, Promise<void>>()
+    const inflightQueue = new Map<string, Promise<void>>()
     const inflightTodo = new Map<string, Promise<void>>()
     const optimistic = new Map<string, Map<string, OptimisticItem>>()
     const maxDirs = 30
@@ -461,7 +462,10 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
             }
 
             const hasSession = Binary.search(store.session, sessionID, (s) => s.id).found
-            const cached = store.message[sessionID] !== undefined && meta.limit[key] !== undefined
+            const cached =
+              store.message[sessionID] !== undefined &&
+              meta.limit[key] !== undefined &&
+              store.queue[sessionID] !== undefined
             if (cached && hasSession && !opts?.force) return
 
             const limit = meta.limit[key] ?? initialMessagePageSize
@@ -496,7 +500,15 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
                     limit,
                   })
 
-            await Promise.all([sessionReq, messagesReq])
+            const queueReq =
+              cached && !opts?.force
+                ? Promise.resolve()
+                : retry(() => client.session.queue({ sessionID })).then((queue) => {
+                    if (!tracked(directory, sessionID)) return
+                    setStore("queue", sessionID, reconcile(queue.data ?? [], { key: "id" }))
+                  })
+
+            await Promise.all([sessionReq, messagesReq, queueReq])
           })
         },
         async diff(sessionID: string, opts?: { force?: boolean }) {
@@ -539,6 +551,22 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
               const list = todo.data ?? []
               setStore("todo", sessionID, reconcile(list, { key: "id" }))
               globalSync.todo.set(sessionID, list)
+            }),
+          )
+        },
+        async queue(sessionID: string, opts?: { force?: boolean }) {
+          const directory = sdk.directory
+          const client = sdk.client
+          const [store, setStore] = globalSync.child(directory)
+          touch(directory, setStore, sessionID)
+          if (store.queue[sessionID] !== undefined && !opts?.force) return
+
+          const key = keyFor(directory, sessionID)
+          return runInflight(inflightQueue, key, () =>
+            retry(() => client.session.queue({ sessionID })).then((queue) => {
+              if (!tracked(directory, sessionID)) return
+              const list = queue.data ?? []
+              setStore("queue", sessionID, reconcile(list, { key: "id" }))
             }),
           )
         },

@@ -6,6 +6,7 @@ import type {
   LspStatus,
   McpStatus,
   Message,
+  PendingMessage,
   Part,
   Path,
   PermissionRequest,
@@ -49,6 +50,9 @@ export type State = {
   }
   session_diff: {
     [sessionID: string]: FileDiff[]
+  }
+  queue: {
+    [sessionID: string]: PendingMessage[]
   }
   todo: {
     [sessionID: string]: Todo[]

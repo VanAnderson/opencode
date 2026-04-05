@@ -1,5 +1,13 @@
 import { describe, expect, test } from "bun:test"
-import type { Message, Part, PermissionRequest, Project, QuestionRequest, Session } from "@opencode-ai/sdk/v2/client"
+import type {
+  Message,
+  Part,
+  PendingMessage,
+  PermissionRequest,
+  Project,
+  QuestionRequest,
+  Session,
+} from "@opencode-ai/sdk/v2/client"
 import { createStore } from "solid-js/store"
 import type { State } from "./types"
 import { applyDirectoryEvent, applyGlobalEvent, cleanupDroppedSessionCaches } from "./event-reducer"
@@ -57,6 +65,20 @@ const questionRequest = (id: string, sessionID: string, title = id) =>
     ],
   }) as QuestionRequest
 
+const pendingMessage = (id: string, sessionID: string) =>
+  ({
+    id,
+    sessionID,
+    position: 0,
+    mode: "queue",
+    status: "queued",
+    payload: {
+      kind: "prompt",
+      parts: [{ type: "text", text: id }],
+    },
+    time: { created: 1, updated: 1 },
+  }) as PendingMessage
+
 const baseState = (input: Partial<State> = {}) =>
   ({
     status: "complete",
@@ -72,6 +94,7 @@ const baseState = (input: Partial<State> = {}) =>
     sessionTotal: 0,
     session_status: {},
     session_diff: {},
+    queue: {},
     todo: {},
     permission: {},
     question: {},
@@ -174,6 +197,7 @@ describe("applyDirectoryEvent", () => {
         message: { ses_1: [message] },
         part: { [message.id]: [textPart("prt_1", "ses_1", message.id)] },
         session_diff: { ses_1: [] },
+        queue: { ses_1: [pendingMessage("pnd_1", "ses_1")] },
         todo: { ses_1: [] },
         permission: { ses_1: [] },
         question: { ses_1: [] },
@@ -195,6 +219,7 @@ describe("applyDirectoryEvent", () => {
     expect(store.message.ses_1).toBeUndefined()
     expect(store.part[message.id]).toBeUndefined()
     expect(store.session_diff.ses_1).toBeUndefined()
+    expect(store.queue.ses_1).toBeUndefined()
     expect(store.todo.ses_1).toBeUndefined()
     expect(store.permission.ses_1).toBeUndefined()
     expect(store.question.ses_1).toBeUndefined()
@@ -220,6 +245,7 @@ describe("applyDirectoryEvent", () => {
           message: { [item.info.id]: [message] },
           part: { [message.id]: [textPart("prt_1", item.info.id, message.id)] },
           session_diff: { [item.info.id]: [] },
+          queue: { [item.info.id]: [pendingMessage("pnd_1", item.info.id)] },
           todo: { [item.info.id]: [] },
           permission: { [item.info.id]: [] },
           question: { [item.info.id]: [] },
@@ -241,6 +267,7 @@ describe("applyDirectoryEvent", () => {
       expect(store.message[item.info.id]).toBeUndefined()
       expect(store.part[message.id]).toBeUndefined()
       expect(store.session_diff[item.info.id]).toBeUndefined()
+      expect(store.queue[item.info.id]).toBeUndefined()
       expect(store.todo[item.info.id]).toBeUndefined()
       expect(store.permission[item.info.id]).toBeUndefined()
       expect(store.question[item.info.id]).toBeUndefined()
@@ -260,6 +287,7 @@ describe("applyDirectoryEvent", () => {
         message: { [dropped.id]: [message] },
         part: { [message.id]: [textPart("prt_1", dropped.id, message.id)] },
         session_diff: { [dropped.id]: [] },
+        queue: { [dropped.id]: [pendingMessage("pnd_1", dropped.id)] },
         todo: { [dropped.id]: [] },
         permission: { [dropped.id]: [] },
         question: { [dropped.id]: [] },
@@ -284,6 +312,7 @@ describe("applyDirectoryEvent", () => {
     expect(store.message[dropped.id]).toBeUndefined()
     expect(store.part[message.id]).toBeUndefined()
     expect(store.session_diff[dropped.id]).toBeUndefined()
+    expect(store.queue[dropped.id]).toBeUndefined()
     expect(store.todo[dropped.id]).toBeUndefined()
     expect(store.permission[dropped.id]).toBeUndefined()
     expect(store.question[dropped.id]).toBeUndefined()
@@ -354,6 +383,32 @@ describe("applyDirectoryEvent", () => {
 
     expect(store.message[sessionID]?.map((x) => x.id)).toEqual(["msg_1", "msg_3"])
     expect(store.part.msg_2).toBeUndefined()
+  })
+
+  test("replaces queue state from queue events", () => {
+    const sessionID = "ses_1"
+    const [store, setStore] = createStore(
+      baseState({
+        queue: { [sessionID]: [pendingMessage("pnd_1", sessionID)] },
+      }),
+    )
+
+    applyDirectoryEvent({
+      event: {
+        type: "session.queue.updated",
+        properties: {
+          sessionID,
+          pending: [pendingMessage("pnd_2", sessionID), pendingMessage("pnd_3", sessionID)],
+        },
+      },
+      store,
+      setStore,
+      push() {},
+      directory: "/tmp",
+      loadLsp() {},
+    })
+
+    expect(store.queue[sessionID]?.map((item) => item.id)).toEqual(["pnd_2", "pnd_3"])
   })
 
   test("upserts and prunes message parts", () => {

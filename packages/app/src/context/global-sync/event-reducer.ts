@@ -3,6 +3,7 @@ import { produce, reconcile, type SetStoreFunction, type Store } from "solid-js/
 import type {
   FileDiff,
   Message,
+  PendingMessage,
   Part,
   PermissionRequest,
   Project,
@@ -65,6 +66,7 @@ export function cleanupDroppedSessionCaches(
   const keep = new Set(next.map((item) => item.id))
   const stale = [
     ...Object.keys(store.message),
+    ...Object.keys(store.queue),
     ...Object.keys(store.session_diff),
     ...Object.keys(store.todo),
     ...Object.keys(store.permission),
@@ -163,6 +165,11 @@ export function applyDirectoryEvent(input: {
     case "session.diff": {
       const props = event.properties as { sessionID: string; diff: FileDiff[] }
       input.setStore("session_diff", props.sessionID, reconcile(props.diff, { key: "file" }))
+      break
+    }
+    case "session.queue.updated": {
+      const props = event.properties as { sessionID: string; pending: PendingMessage[] }
+      input.setStore("queue", props.sessionID, reconcile(props.pending, { key: "id" }))
       break
     }
     case "todo.updated": {
