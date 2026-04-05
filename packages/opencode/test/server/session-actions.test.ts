@@ -90,13 +90,13 @@ function pendingText(item: SessionQueue.PendingMessage) {
 }
 
 describe("session action routes", () => {
-  test("abort route calls SessionPrompt.cancel", async () => {
+  test("abort route interrupts without redispatching queued work", async () => {
     await using tmp = await tmpdir({ git: true })
     await Instance.provide({
       directory: tmp.path,
       fn: async () => {
         const session = await Session.create({})
-        const cancel = spyOn(SessionPrompt, "cancel").mockResolvedValue()
+        const interrupt = spyOn(SessionPrompt, "interrupt").mockResolvedValue()
         const app = Server.Default()
 
         const res = await app.request(`/session/${session.id}/abort`, {
@@ -105,7 +105,7 @@ describe("session action routes", () => {
 
         expect(res.status).toBe(200)
         expect(await res.json()).toBe(true)
-        expect(cancel).toHaveBeenCalledWith(session.id)
+        expect(interrupt).toHaveBeenCalledWith({ sessionID: session.id, holdQueuedDispatch: true })
 
         await Session.remove(session.id)
       },

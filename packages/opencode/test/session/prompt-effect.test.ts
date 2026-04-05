@@ -753,6 +753,109 @@ it.live(
   3_000,
 )
 
+it.live(
+  "abort route leaves queued work intact after interrupting the active run",
+  () =>
+    provideTmpdirServer(
+      Effect.fnUntraced(function* ({ dir, llm }) {
+        const chat = yield* Effect.promise(() => Session.create({ title: "Abort keeps queue" }))
+        const app = Server.Default()
+
+        const submit = (body: {
+          mode: "queue" | "steer"
+          payload: SessionQueue.PendingMessagePayload
+          source: string
+        }) =>
+          Effect.promise(() =>
+            Promise.resolve(
+              app.request(`/session/${chat.id}/submit`, {
+                method: "POST",
+                headers: {
+                  "content-type": "application/json",
+                  "x-opencode-directory": dir,
+                },
+                body: JSON.stringify(body),
+              }),
+            ),
+          )
+
+        yield* llm.pushMatch((hit) => JSON.stringify(hit.body).includes("hello first"), reply().hang().item())
+        yield* llm.textMatch((hit) => JSON.stringify(hit.body).includes("hello queued after abort"), "queued reply")
+        yield* user(chat.id, "hello first")
+
+        const first = yield* Effect.promise(() => SessionPrompt.loop({ sessionID: chat.id })).pipe(Effect.forkChild)
+        yield* llm.wait(1)
+
+        const queued = yield* submit({
+          mode: "queue",
+          payload: {
+            kind: "prompt",
+            agent: "build",
+            model: ref,
+            variant: "default",
+            parts: [{ type: "text", text: "hello queued after abort" }],
+          },
+          source: "test",
+        })
+        expect(queued.status).toBe(200)
+
+        const aborted = yield* Effect.promise(() =>
+          Promise.resolve(
+            app.request(`/session/${chat.id}/abort`, {
+              method: "POST",
+              headers: {
+                "x-opencode-directory": dir,
+              },
+            }),
+          ),
+        )
+        expect(aborted.status).toBe(200)
+        expect((yield* Effect.promise(() => aborted.json())) as boolean).toBe(true)
+
+        const firstExit = yield* Fiber.await(first)
+        expect(Exit.isSuccess(firstExit)).toBe(true)
+        if (Exit.isSuccess(firstExit) && firstExit.value.info.role === "assistant") {
+          expect(firstExit.value.info.error?.name).toBe("MessageAbortedError")
+        }
+
+        yield* Effect.sleep("150 millis")
+
+        const pending = yield* Effect.promise(() => SessionQueue.list(chat.id))
+        expect(
+          pending.map((item) => {
+            const text =
+              item.payload.kind === "prompt"
+                ? item.payload.parts[0]?.type === "text"
+                  ? item.payload.parts[0].text
+                  : ""
+                : item.payload.arguments
+            return {
+              text,
+              status: item.status,
+            }
+          }),
+        ).toEqual([
+          {
+            text: "hello queued after abort",
+            status: "queued",
+          },
+        ])
+
+        const msgs = yield* Effect.promise(() => Session.messages({ sessionID: chat.id }))
+        expect(
+          msgs.some(
+            (msg) =>
+              msg.info.role === "user" &&
+              msg.parts.some((part) => part.type === "text" && part.text === "hello queued after abort"),
+          ),
+        ).toBe(false)
+        expect(yield* llm.calls).toBe(1)
+      }),
+      { git: true, config: providerCfg },
+    ),
+  10_000,
+)
+
 // Queue semantics
 
 it.live(
@@ -1508,6 +1611,105 @@ it.live(
         })
         expect(result.blocked.createdAgainstExecutionID).toBe(active.id)
         expect(yield* llm.calls).toBe(2)
+      }),
+      { git: true, config: providerCfg },
+    ),
+  10_000,
+)
+
+it.live(
+  "abort with queue present leaves queued follow-ups intact",
+  () =>
+    provideTmpdirServer(
+      Effect.fnUntraced(function* ({ dir, llm }) {
+        const chat = yield* Effect.promise(() => Session.create({ title: "Abort keeps queue" }))
+        const app = Server.Default()
+
+        const submit = (body: {
+          mode: "queue" | "steer"
+          payload: SessionQueue.PendingMessagePayload
+          source: string
+        }) =>
+          Effect.promise(() =>
+            Promise.resolve(
+              app.request(`/session/${chat.id}/submit`, {
+                method: "POST",
+                headers: {
+                  "content-type": "application/json",
+                  "x-opencode-directory": dir,
+                },
+                body: JSON.stringify(body),
+              }),
+            ),
+          )
+
+        const abort = () =>
+          Effect.promise(() =>
+            Promise.resolve(
+              app.request(`/session/${chat.id}/abort`, {
+                method: "POST",
+                headers: {
+                  "x-opencode-directory": dir,
+                },
+              }),
+            ),
+          )
+
+        yield* llm.reset
+        yield* llm.pushMatch((hit) => JSON.stringify(hit.body).includes("hello first"), reply().hang().item())
+        const active = yield* user(chat.id, "hello first")
+
+        const first = yield* Effect.promise(() => SessionPrompt.loop({ sessionID: chat.id })).pipe(Effect.forkChild)
+        yield* llm.wait(1)
+
+        const staleRes = yield* submit({
+          mode: "queue",
+          payload: {
+            kind: "prompt",
+            agent: "build",
+            model: ref,
+            variant: "default",
+            parts: [{ type: "text", text: "hello stale abort" }],
+          },
+          source: "test",
+        })
+        expect(staleRes.status).toBe(200)
+        const staleBody = (yield* Effect.promise(() => staleRes.json())) as {
+          kind: "queued"
+          pending: SessionQueue.PendingMessage
+        }
+        expect(staleBody.pending.createdAgainstExecutionID).toBe(active.id)
+
+        const abortRes = yield* abort()
+        expect(abortRes.status).toBe(200)
+        expect(yield* Effect.promise(() => abortRes.json())).toBe(true)
+
+        const firstExit = yield* Fiber.await(first)
+        expect(Exit.isSuccess(firstExit)).toBe(true)
+        if (Exit.isSuccess(firstExit) && firstExit.value.info.role === "assistant") {
+          expect(firstExit.value.info.error?.name).toBe("MessageAbortedError")
+        }
+
+        yield* Effect.sleep(100)
+
+        const pending = yield* Effect.promise(() => SessionQueue.list(chat.id))
+        expect(pending).toMatchObject([
+          {
+            id: staleBody.pending.id,
+            status: "queued",
+            createdAgainstExecutionID: active.id,
+          },
+        ])
+
+        const msgs = yield* Effect.promise(() => Session.messages({ sessionID: chat.id }))
+        expect(
+          msgs.some(
+            (msg) =>
+              msg.info.role === "user" &&
+              msg.parts.some((part) => part.type === "text" && part.text === "hello stale abort"),
+          ),
+        ).toBe(false)
+        expect(yield* llm.calls).toBe(1)
       }),
       { git: true, config: providerCfg },
     ),
