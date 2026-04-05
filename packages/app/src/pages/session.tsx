@@ -1710,6 +1710,13 @@ export default function Page() {
         return true
       }
 
+      await sdk.client.session.submit({
+        sessionID: draft.sessionID,
+        mode,
+        source: "app",
+        payload,
+      })
+
       if (pendingMessageID && mode === "steer") {
         await sdk.client.session.queueDelete({
           sessionID: draft.sessionID,
@@ -1717,12 +1724,6 @@ export default function Page() {
         })
       }
 
-      await sdk.client.session.submit({
-        sessionID: draft.sessionID,
-        mode,
-        source: "app",
-        payload,
-      })
       setFollowup("edit", undefined)
       return true
     } catch (err) {
