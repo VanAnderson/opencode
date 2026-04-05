@@ -6,6 +6,7 @@ import { Instance } from "../../src/project/instance"
 import { ModelID, ProviderID } from "../../src/provider/schema"
 import { Session } from "../../src/session"
 import { SessionQueue } from "../../src/session/queue"
+import { PendingMessageID, SessionID } from "../../src/session/schema"
 import { Log } from "../../src/util/log"
 
 const projectRoot = path.join(__dirname, "../..")
@@ -174,9 +175,9 @@ describe("SessionQueue", () => {
   })
 
   test("persists pending messages across instance reload", async () => {
-    let sessionID: string | undefined
-    let firstID: string | undefined
-    let secondID: string | undefined
+    let sessionID: SessionID | undefined
+    let firstID: PendingMessageID | undefined
+    let secondID: PendingMessageID | undefined
 
     await Instance.provide({
       directory: projectRoot,
@@ -201,23 +202,28 @@ describe("SessionQueue", () => {
     })
 
     try {
+      if (!sessionID || !firstID || !secondID) throw new Error("queue test setup failed")
+      const persistedSessionID = sessionID
+      const persistedFirstID = firstID
+      const persistedSecondID = secondID
+
       await Instance.provide({
         directory: projectRoot,
         fn: async () => {
           expect(
-            (await SessionQueue.list(sessionID!)).map((item) => ({
+            (await SessionQueue.list(persistedSessionID)).map((item) => ({
               id: item.id,
               status: item.status,
               position: item.position,
             })),
           ).toEqual([
             {
-              id: firstID,
+              id: persistedFirstID,
               status: "queued",
               position: 0,
             },
             {
-              id: secondID,
+              id: persistedSecondID,
               status: "queued",
               position: 1,
             },
@@ -228,7 +234,8 @@ describe("SessionQueue", () => {
       await Instance.provide({
         directory: projectRoot,
         fn: async () => {
-          await Session.remove(sessionID!)
+          if (!sessionID) return
+          await Session.remove(sessionID)
         },
       })
     }
